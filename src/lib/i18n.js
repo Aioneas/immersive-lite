@@ -13,7 +13,14 @@ void (function () {
    * @returns {string} localizedString
    */
   function getMessage(messageName, substitutions) {
-    return chrome.i18n.getMessage(messageName, substitutions);
+    if (typeof imtRuntime !== "undefined" && imtRuntime.getMessage) {
+      const text = imtRuntime.getMessage(messageName, substitutions);
+      if (text) return text;
+    }
+    if (typeof chrome !== "undefined" && chrome.i18n && chrome.i18n.getMessage) {
+      return chrome.i18n.getMessage(messageName, substitutions);
+    }
+    return "";
   }
 
   /**
@@ -70,7 +77,7 @@ void (function () {
   };
 
   // detects if this script is not a contentScript and then call i18n.translateDocument
-  if (typeof chrome.tabs !== "undefined") {
+  if (typeof chrome !== "undefined" && typeof chrome.tabs !== "undefined") {
     //@ts-ignore
     chrome.i18n.translateDocument();
   }

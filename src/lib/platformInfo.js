@@ -3,7 +3,7 @@
 const platformInfo = {};
 
 twpConfig.onReady(function () {
-  if (chrome.tabs) {
+  if (typeof chrome !== "undefined" && chrome.tabs) {
     twpConfig.set("originalUserAgent", navigator.userAgent);
   }
 

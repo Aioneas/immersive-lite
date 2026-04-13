@@ -58,14 +58,25 @@ The following projects are studied for architecture and ideas, but their code is
 - Add local config for base URL / API key / model
 - Keep old content-script translation pipeline
 
+### v0.1.1
+- Harden `openai_compatible` response parsing
+- Add provider presets and connection test
+- Remove PDF legacy and donation/resource leftovers
+
 ### v0.2
 - Simplify popup and options information architecture
 - Reduce permissions and dead code
 - Prepare Safari / Userscripts adaptation layer
 
+### v0.2.1
+- Add runtime adapter (`extension` / `userscript` / `web`)
+- Add preview userscript entry and userscript build target
+- Start reducing extension-only direct dependencies in shared libs
+
 ### v0.3
-- Userscript/Safari build target
+- Userscript/Safari build target usable on-device
 - More provider presets (DeepSeek-compatible / OpenRouter-compatible)
+- GM storage + minimal local settings flow
 
 ## License
 

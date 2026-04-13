@@ -43,13 +43,19 @@
 - 页面翻译链路已接入 `/v1/chat/completions`
 - 服务切换链路已支持：`google -> yandex -> openai_compatible -> google`
 
-### 3. 简化构建
-- 原 gulp 构建在当前环境卡住，已替换为轻量 Node 构建脚本 `scripts/build.mjs`
-- 可直接生成：
-  - `dist/firefox`
-  - `dist/chrome`
+### 3. Safari / Userscripts 第一阶段前置适配
+- 新增 `src/lib/runtime.js` 作为 runtime adapter
+- 支持识别 `extension / userscript / web`
+- 抽象消息、资源 URL、网络请求
+- 新增 `src/userscript/immersive-lite.user.js` preview 入口
+- 构建脚本已可生成 `dist/userscript/immersive-lite.user.js`
 
 ## 后续计划
+
+### v0.2.2
+- 让翻译请求逐步改用 runtime.request
+- 让 `openai_compatible` 在 userscript 模式下独立可用
+- 增加 GM storage fallback
 
 ### v0.1.1
 - 补充更安全的 OpenAI-compatible 响应解析

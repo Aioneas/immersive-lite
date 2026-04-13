@@ -8,7 +8,8 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "firefox": "node scripts/build.mjs",
-    "chrome": "node scripts/build.mjs"
+    "chrome": "node scripts/build.mjs",
+    "userscript": "node scripts/build.mjs"
   },
   "devDependencies": {
     "@babel/core": "^7.19.3",

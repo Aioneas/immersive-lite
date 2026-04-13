@@ -54,11 +54,24 @@ function buildChrome() {
   return out;
 }
 
+function buildUserscript() {
+  const outDir = path.join(distDir, 'userscript');
+  fs.mkdirSync(outDir, { recursive: true });
+  const source = path.join(srcDir, 'userscript', 'immersive-lite.user.js');
+  const target = path.join(outDir, 'immersive-lite.user.js');
+  const firefoxVersion = firefoxManifest.version;
+  const text = fs.readFileSync(source, 'utf8').replaceAll('0.1.0', firefoxVersion);
+  fs.writeFileSync(target, text);
+  return target;
+}
+
 rmSafe(distDir);
 fs.mkdirSync(distDir, { recursive: true });
 const firefoxOut = buildFirefox();
 const chromeOut = buildChrome();
+const userscriptOut = buildUserscript();
 
 console.log('Built:');
 console.log('-', firefoxOut);
 console.log('-', chromeOut);
+console.log('-', userscriptOut);
