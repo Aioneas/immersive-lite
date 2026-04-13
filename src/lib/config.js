@@ -42,9 +42,11 @@ const twpConfig = (function () {
     translateDynamicallyCreatedContent: "yes",
     autoTranslateWhenClickingALink: "no",
     openaiCompatible: {
+      providerPreset: "openai",
       baseUrl: "https://api.openai.com",
       apiKey: "",
       model: "gpt-4o-mini",
+      fallbackService: "google",
       systemPrompt: "You are a translation engine. Translate the given HTML content into the target language faithfully. Preserve HTML structure, inline placeholders, and ordering. Return only translated HTML."
     }
   };

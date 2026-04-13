@@ -32,8 +32,7 @@
     "permissions": [
         "storage",
         "activeTab",
-        "contextMenus",
-        "webRequest"
+        "contextMenus"
     ],
     "host_permissions":[
         "<all_urls>"

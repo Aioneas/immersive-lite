@@ -5,23 +5,6 @@ function checkedLastError() {
     chrome.runtime.lastError
 }
 
-// get mimetype
-var tabToMimeType = {}
-chrome.webRequest.onHeadersReceived.addListener(function(details) {
-    if (details.tabId !== -1) {
-        let contentTypeHeader = null
-        for (const header of details.responseHeaders) {
-            if (header.name.toLowerCase() === 'content-type') {
-                contentTypeHeader = header
-                break
-            }
-        }
-        tabToMimeType[details.tabId] = contentTypeHeader && contentTypeHeader.value.split(';', 1)[0]
-    }
-}, {
-    urls: ['*://*/*'],
-    types: ['main_frame']
-}, ['responseHeaders']);
 
 let currentScheme = 'light'
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -73,15 +56,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         sendResponse((sender.tab.url))
     } else if (request.action === "thisFrameIsInFocus") {
         chrome.tabs.sendMessage(sender.tab.id, {action: "anotherFrameIsInFocus"}, checkedLastError)
-    } else if (request.action === "getTabMimeType") {
-        chrome.tabs.query({active: true, currentWindow: true}, tabs => {
-            if(tabs && tabs.length > 0) {
-             sendResponse(tabToMimeType[tabs[0].id])
-            }else{
-              sendResponse(null)
-            }
-        })
-        return true
     }else if(request.action ==='detectLanguage'){
         chrome.i18n.detectLanguage(request.text, function(result){
           if(result.languages.length > 0){
@@ -90,6 +64,29 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             sendResponse(undefined);
           }
         });
+        return true
+    } else if (request.action === "testOpenAICompatible") {
+        const cfg = twpConfig.get("openaiCompatible") || {}
+        const baseUrl = ((cfg.baseUrl || "https://api.openai.com").trim().replace(/\/$/, ""))
+        const apiKey = (cfg.apiKey || "").trim()
+        if (!apiKey) {
+            sendResponse({ ok: false, error: "API key is missing." })
+            return
+        }
+        fetch(baseUrl + "/v1/models", {
+            headers: {
+                Authorization: "Bearer " + apiKey
+            }
+        }).then(async (resp) => {
+            if (resp.ok) {
+                sendResponse({ ok: true })
+            } else {
+                const text = await resp.text()
+                sendResponse({ ok: false, error: "HTTP " + resp.status + " " + text })
+            }
+        }).catch((err) => {
+            sendResponse({ ok: false, error: String(err && err.message ? err.message : err) })
+        })
         return true
     }
 })
@@ -199,34 +196,14 @@ if (typeof chrome.contextMenus !== "undefined") {
         title: chrome.i18n.getMessage("btnMoreOptions"),
         contexts: ["browser_action", "page_action"]
     })
-    chrome.contextMenus.create({
-        id: "browserAction-pdf-to-html",
-        title: chrome.i18n.getMessage("msgPDFtoHTML"),
-        contexts: ["browser_action"]
-    })
-    chrome.contextMenus.create({
-        id: "pageAction-pdf-to-html",
-        title: chrome.i18n.getMessage("msgPDFtoHTML"),
-        contexts: ["page_action"]
-    })
 
     const tabHasContentScript = {}
 
     chrome.contextMenus.onClicked.addListener((info, tab) => {
         if (info.menuItemId == "translate-web-page") {
-            // check is pdf
-            const isPdf =  globalIsPdf(tab)
-            if(isPdf) {
-              // show popup
-              resetBrowserAction(true)
-              chrome.browserAction.openPopup()
-              resetBrowserAction()
-
-            }else{
-              chrome.tabs.sendMessage(tab.id, {
-                  action: "toggle-translation"
-              }, checkedLastError)
-            }
+            chrome.tabs.sendMessage(tab.id, {
+                action: "toggle-translation"
+            }, checkedLastError)
         } else if (info.menuItemId == "browserAction-showPopup") {
             resetBrowserAction(true)
 
@@ -246,24 +223,6 @@ if (typeof chrome.contextMenus !== "undefined") {
             chrome.tabs.create({
                 url: chrome.runtime.getURL("/options/options.html")
             })
-        } else if (info.menuItemId == "browserAction-pdf-to-html") {
-            const mimeType = tabToMimeType[tab.id]
-            if (mimeType && mimeType.toLowerCase() === "application/pdf" && typeof chrome.browserAction.openPopup !== 'undefined') {
-                chrome.browserAction.openPopup()
-            } else {
-                chrome.tabs.create({
-                    url: "https://translatewebpages.org/"
-                })
-            }
-        } else if (info.menuItemId == "pageAction-pdf-to-html") {
-            const mimeType = tabToMimeType[tab.id]
-            if (mimeType && mimeType.toLowerCase() === "application/pdf" && typeof chrome.pageAction.openPopup !== 'undefined') {
-                chrome.pageAction.openPopup()
-            } else {
-                chrome.tabs.create({
-                    url: "https://translatewebpages.org/"
-                })
-            }
         }
     })
 

@@ -81,13 +81,6 @@ const specialRules = [
     ]
   },
   {
-    "regex": "translatewebpages.org/result/.+$",
-    "selectors": [
-      "div"
-    ],
-    "style": "none"
-  },
-  {
     "hostname": "www.cell.com",
     "selectors": [
       "div.section-paragraph > div.section-paragraph > div.section-paragraph",

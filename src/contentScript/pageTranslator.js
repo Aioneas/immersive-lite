@@ -1003,23 +1003,26 @@ Promise.all([twpConfig.onReady(), getTabUrl()])
 
                 if (twpConfig.get("alwaysTranslateSites").indexOf(tabHostName) !== -1) {
                     pageTranslator.translatePage()
-                }else if(result!=='und'){
+                } else if (result !== 'und') {
                     const langCode = twpLang.fixTLanguageCode(result)
                     if (langCode) {
                         originalTabLanguage = langCode
                     }
-                    if (location.hostname === "translatewebpages.org" && location.href.indexOf("?autotranslate") !== -1 && twpConfig.get("neverTranslateSites").indexOf(tabHostName) === -1) {
+                    const isNotExternalTranslateHost = (
+                        location.hostname !== "translate.googleusercontent.com" &&
+                        location.hostname !== "translate.google.com" &&
+                        location.hostname !== "translate.yandex.com"
+                    )
+                    if (
+                        isNotExternalTranslateHost &&
+                        pageLanguageState === "original" &&
+                        !chrome.extension.inIncognitoContext &&
+                        twpConfig.get("neverTranslateSites").indexOf(tabHostName) === -1 &&
+                        langCode &&
+                        langCode !== currentTargetLanguage &&
+                        twpConfig.get("alwaysTranslateLangs").indexOf(langCode) !== -1
+                    ) {
                         pageTranslator.translatePage()
-                    } else {
-                        if (location.hostname !== "translate.googleusercontent.com" && location.hostname !== "translate.google.com" && location.hostname !== "translate.yandex.com") {
-                            if (pageLanguageState === "original" && !chrome.extension.inIncognitoContext) {
-                                if (twpConfig.get("neverTranslateSites").indexOf(tabHostName) === -1) {
-                                    if (langCode && langCode !== currentTargetLanguage && twpConfig.get("alwaysTranslateLangs").indexOf(langCode) !== -1) {
-                                        pageTranslator.translatePage()
-                                    } 
-                                }
-                            }
-                        }
                     }
                 }
 

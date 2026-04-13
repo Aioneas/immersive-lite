@@ -11,69 +11,158 @@ const translationService = (function () {
     return baseUrl.replace(/\/$/, "");
   }
 
-  async function translateWithOpenAICompatible(sourceLanguage, targetLanguage, sourceArray2d) {
+  function buildOpenAICompatibleConfigPatch(presetKey) {
+    switch (presetKey) {
+      case "openai":
+        return {
+          providerPreset: "openai",
+          baseUrl: "https://api.openai.com",
+          model: "gpt-4o-mini",
+        };
+      case "openrouter":
+        return {
+          providerPreset: "openrouter",
+          baseUrl: "https://openrouter.ai/api",
+          model: "openai/gpt-4o-mini",
+        };
+      case "deepseek":
+        return {
+          providerPreset: "deepseek",
+          baseUrl: "https://api.deepseek.com",
+          model: "deepseek-chat",
+        };
+      case "custom":
+      default:
+        return {
+          providerPreset: "custom",
+        };
+    }
+  }
+
+  function extractJsonArrayFromText(content) {
+    if (Array.isArray(content)) return content;
+    if (typeof content !== "string") return null;
+    const trimmed = content.trim();
+    const candidates = [trimmed];
+    const codeBlock = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+    if (codeBlock && codeBlock[1]) candidates.push(codeBlock[1].trim());
+    const arrayMatch = trimmed.match(/\[[\s\S]*\]/);
+    if (arrayMatch && arrayMatch[0]) candidates.push(arrayMatch[0]);
+
+    for (const candidate of candidates) {
+      try {
+        const parsed = JSON.parse(candidate);
+        if (Array.isArray(parsed)) return parsed;
+      } catch (e) {}
+    }
+    return null;
+  }
+
+  function normalizeTranslatedArray(translatedArray, sourceArray) {
+    if (!Array.isArray(translatedArray)) return null;
+    let normalized = translatedArray.map((item) => {
+      if (typeof item === "string") return item;
+      if (item == null) return "";
+      if (typeof item === "object") {
+        return item.text || item.translation || item.translatedText || JSON.stringify(item);
+      }
+      return String(item);
+    });
+
+    if (normalized.length === sourceArray.length) return normalized;
+    if (normalized.length === 1 && sourceArray.length > 1) {
+      return sourceArray.map((_, idx) => (idx === 0 ? normalized[0] : ""));
+    }
+    if (normalized.length > sourceArray.length) {
+      return normalized.slice(0, sourceArray.length);
+    }
+    if (normalized.length < sourceArray.length) {
+      while (normalized.length < sourceArray.length) normalized.push("");
+      return normalized;
+    }
+    return normalized;
+  }
+
+  async function requestOpenAICompatibleTranslation(sourceLanguage, targetLanguage, sourceArray) {
     const cfg = twpConfig.get("openaiCompatible") || {};
     const baseUrl = normalizeOpenaiBaseUrl(cfg.baseUrl);
     const apiKey = (cfg.apiKey || "").trim();
     const model = (cfg.model || "gpt-4o-mini").trim();
     const systemPrompt = (cfg.systemPrompt || "You are a translation engine. Translate the given HTML content into the target language faithfully. Preserve HTML structure, inline placeholders, and ordering. Return only translated HTML.").trim();
     if (!apiKey) {
-      throw new Error("OpenAI-compatible API key is missing.");
+      throw new Error("OpenAI-compatible API key is missing. Please configure it in Options > Translations.");
     }
 
-    const results = [];
-    for (const sourceArray of sourceArray2d) {
-      const payload = {
-        model,
-        temperature: 0,
-        messages: [
-          { role: "system", content: systemPrompt },
-          {
-            role: "user",
-            content:
-              "Translate the following HTML fragment array into target language.\n" +
-              "Return a JSON array of translated strings in the same order and same length.\n" +
-              "Keep placeholders, tags and semantic structure.\n" +
-              "SOURCE_LANGUAGE: " + sourceLanguage + "\n" +
-              "TARGET_LANGUAGE: " + targetLanguage + "\n" +
-              "INPUT_JSON: " + JSON.stringify(sourceArray),
-          },
-        ],
-      };
-
-      const response = await fetch(baseUrl + "/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: "Bearer " + apiKey,
+    const payload = {
+      model,
+      temperature: 0,
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: systemPrompt },
+        {
+          role: "user",
+          content:
+            "Translate the following HTML fragment array into the target language.\n" +
+            "Return valid JSON only in the form: {\"translations\":[\"...\"]}.\n" +
+            "The array length must exactly match the input length.\n" +
+            "Preserve placeholders, tags, order, and meaning.\n" +
+            "SOURCE_LANGUAGE: " + sourceLanguage + "\n" +
+            "TARGET_LANGUAGE: " + targetLanguage + "\n" +
+            "INPUT_JSON: " + JSON.stringify(sourceArray),
         },
-        body: JSON.stringify(payload),
-      });
+      ],
+    };
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error("OpenAI-compatible request failed: " + response.status + " " + errorText);
-      }
+    const response = await fetch(baseUrl + "/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer " + apiKey,
+      },
+      body: JSON.stringify(payload),
+    });
 
-      const data = await response.json();
-      const content = data?.choices?.[0]?.message?.content;
-      if (!content) throw new Error("OpenAI-compatible response missing content");
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error("OpenAI-compatible request failed: " + response.status + " " + errorText);
+    }
 
-      let translatedArray = null;
+    const data = await response.json();
+    const content = data?.choices?.[0]?.message?.content;
+    if (!content) throw new Error("OpenAI-compatible response missing content");
+
+    let translatedArray = null;
+    try {
+      const parsed = JSON.parse(content);
+      translatedArray = parsed?.translations || parsed?.data || parsed;
+    } catch (e) {
+      translatedArray = extractJsonArrayFromText(content);
+    }
+
+    translatedArray = normalizeTranslatedArray(translatedArray, sourceArray);
+    if (!translatedArray) {
+      throw new Error("OpenAI-compatible response could not be parsed into a translation array");
+    }
+    return translatedArray;
+  }
+
+  async function translateWithOpenAICompatible(sourceLanguage, targetLanguage, sourceArray2d) {
+    const results = [];
+    const fallbackService = twpConfig.get("openaiCompatible")?.fallbackService || "google";
+    for (const sourceArray of sourceArray2d) {
       try {
-        translatedArray = JSON.parse(content);
+        const translatedArray = await requestOpenAICompatibleTranslation(sourceLanguage, targetLanguage, sourceArray);
+        results.push(translatedArray);
       } catch (e) {
-        const match = content.match(/\[[\s\S]*\]/);
-        if (match) {
-          translatedArray = JSON.parse(match[0]);
+        console.error("[openai_compatible]", e);
+        if (fallbackService && fallbackService !== "none") {
+          const service = serviceList.get(fallbackService) || serviceList.get("google");
+          const fallbackResults = await service.translate(sourceLanguage, targetLanguage, [sourceArray]);
+          results.push(fallbackResults[0]);
+        } else {
+          throw e;
         }
       }
-
-      if (!Array.isArray(translatedArray)) {
-        throw new Error("OpenAI-compatible response is not a JSON array");
-      }
-
-      results.push(translatedArray);
     }
     return results;
   }

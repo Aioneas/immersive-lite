@@ -181,16 +181,32 @@
                 </select>
                 <div id="openaiCompatibleSettings" class="w3-margin-top w3-padding w3-border w3-round" style="display:none;">
                     <p><b>OpenAI-compatible service</b></p>
+                    <label>Provider preset</label>
+                    <select id="openaiProviderPreset" class="w3-select w3-border w3-margin-bottom">
+                        <option value="openai">OpenAI</option>
+                        <option value="openrouter">OpenRouter</option>
+                        <option value="deepseek">DeepSeek-compatible</option>
+                        <option value="custom">Custom compatible</option>
+                    </select>
                     <label>Base URL</label>
                     <input id="openaiBaseUrl" class="w3-input w3-border w3-margin-bottom" placeholder="https://api.openai.com" />
                     <label>API Key</label>
                     <input id="openaiApiKey" class="w3-input w3-border w3-margin-bottom" type="password" placeholder="sk-..." />
                     <label>Model</label>
                     <input id="openaiModel" class="w3-input w3-border w3-margin-bottom" placeholder="gpt-4o-mini" />
+                    <label>Fallback service</label>
+                    <select id="openaiFallbackService" class="w3-select w3-border w3-margin-bottom">
+                        <option value="google">Google</option>
+                        <option value="yandex">Yandex</option>
+                        <option value="none">None</option>
+                    </select>
                     <label>System Prompt</label>
                     <textarea id="openaiSystemPrompt" class="w3-input w3-border w3-margin-bottom" rows="4" placeholder="Translate the HTML content faithfully and keep inline placeholders unchanged."></textarea>
-                    <button id="saveOpenaiCompatible" class="w3-button w3-blue w3-round">Save service settings</button>
-                    <p style="color:#777;margin-top:8px;">Supports OpenAI-compatible `/v1/chat/completions` APIs such as OpenAI, OpenRouter, DeepSeek-compatible gateways, and self-hosted compatible services.</p>
+                    <div class="w3-bar">
+                        <button id="saveOpenaiCompatible" class="w3-button w3-blue w3-round">Save service settings</button>
+                        <button id="testOpenaiCompatible" class="w3-button w3-light-grey w3-round" style="margin-left:8px;">Test connection</button>
+                    </div>
+                    <p id="openaiTestStatus" style="color:#777;margin-top:8px;">Supports OpenAI-compatible `/v1/chat/completions` APIs such as OpenAI, OpenRouter, DeepSeek-compatible gateways, and self-hosted compatible services.</p>
                 </div>
                 <br>
                 <p><b data-i18n="lblTranslateDynamicallyCreatedContent">Translate dynamically created content</b></p>

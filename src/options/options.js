@@ -2,6 +2,13 @@
 
 var $ = document.querySelector.bind(document)
 
+const OPENAI_PROVIDER_PRESETS = {
+    openai: { baseUrl: "https://api.openai.com", model: "gpt-4o-mini" },
+    openrouter: { baseUrl: "https://openrouter.ai/api", model: "openai/gpt-4o-mini" },
+    deepseek: { baseUrl: "https://api.deepseek.com", model: "deepseek-chat" },
+    custom: {}
+}
+
 function updateOpenaiCompatibleVisibility() {
     const wrap = $("#openaiCompatibleSettings")
     const select = $("#pageTranslatorService")
@@ -11,22 +18,59 @@ function updateOpenaiCompatibleVisibility() {
 
 function fillOpenaiCompatibleSettings() {
     const config = twpConfig.get("openaiCompatible") || {}
+    if ($("#openaiProviderPreset")) $("#openaiProviderPreset").value = config.providerPreset || "openai"
     if ($("#openaiBaseUrl")) $("#openaiBaseUrl").value = config.baseUrl || "https://api.openai.com"
     if ($("#openaiApiKey")) $("#openaiApiKey").value = config.apiKey || ""
     if ($("#openaiModel")) $("#openaiModel").value = config.model || "gpt-4o-mini"
+    if ($("#openaiFallbackService")) $("#openaiFallbackService").value = config.fallbackService || "google"
     if ($("#openaiSystemPrompt")) $("#openaiSystemPrompt").value = config.systemPrompt || ""
+}
+
+function applyOpenaiProviderPreset(presetKey) {
+    const preset = OPENAI_PROVIDER_PRESETS[presetKey] || {}
+    if (preset.baseUrl && $("#openaiBaseUrl")) $("#openaiBaseUrl").value = preset.baseUrl
+    if (preset.model && $("#openaiModel")) $("#openaiModel").value = preset.model
 }
 
 function saveOpenaiCompatibleSettings() {
     const current = twpConfig.get("openaiCompatible") || {}
     const next = {
         ...current,
+        providerPreset: $("#openaiProviderPreset") ? $("#openaiProviderPreset").value : (current.providerPreset || "openai"),
         baseUrl: $("#openaiBaseUrl") ? $("#openaiBaseUrl").value.trim() : current.baseUrl,
         apiKey: $("#openaiApiKey") ? $("#openaiApiKey").value.trim() : current.apiKey,
         model: $("#openaiModel") ? $("#openaiModel").value.trim() : current.model,
+        fallbackService: $("#openaiFallbackService") ? $("#openaiFallbackService").value : (current.fallbackService || "google"),
         systemPrompt: $("#openaiSystemPrompt") ? $("#openaiSystemPrompt").value.trim() : current.systemPrompt,
     }
     twpConfig.set("openaiCompatible", next)
+    if ($("#openaiTestStatus")) {
+        $("#openaiTestStatus").textContent = "Settings saved locally."
+        $("#openaiTestStatus").style.color = "#777"
+    }
+}
+
+function testOpenaiCompatibleSettings() {
+    if ($("#openaiTestStatus")) {
+        $("#openaiTestStatus").textContent = "Testing connection..."
+        $("#openaiTestStatus").style.color = "#777"
+    }
+    saveOpenaiCompatibleSettings()
+    chrome.runtime.sendMessage({ action: "testOpenAICompatible" }, (response) => {
+        if (!$("#openaiTestStatus")) return
+        if (!response) {
+            $("#openaiTestStatus").textContent = "No response from background test."
+            $("#openaiTestStatus").style.color = "#c0392b"
+            return
+        }
+        if (response.ok) {
+            $("#openaiTestStatus").textContent = "Connection test passed."
+            $("#openaiTestStatus").style.color = "#2e7d32"
+        } else {
+            $("#openaiTestStatus").textContent = response.error || "Connection test failed."
+            $("#openaiTestStatus").style.color = "#c0392b"
+        }
+    })
 }
 
 twpConfig.onReady(function () {
@@ -441,8 +485,14 @@ twpConfig.onReady(function () {
     $("#pageTranslatorService").value = twpConfig.get("pageTranslatorService")
     fillOpenaiCompatibleSettings()
     updateOpenaiCompatibleVisibility()
+    if ($("#openaiProviderPreset")) {
+        $("#openaiProviderPreset").onchange = (e) => applyOpenaiProviderPreset(e.target.value)
+    }
     if ($("#saveOpenaiCompatible")) {
         $("#saveOpenaiCompatible").onclick = () => saveOpenaiCompatibleSettings()
+    }
+    if ($("#testOpenaiCompatible")) {
+        $("#testOpenaiCompatible").onclick = () => testOpenaiCompatibleSettings()
     }
 
 

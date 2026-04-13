@@ -14,7 +14,7 @@ const headingElements = ['h1' ];
 
 const pdfSelectorsConfig =   {
     regex:
-      "translatewebpages.org/result/.+$"
+      "$a"
 };
 
 const inlineElements = [
