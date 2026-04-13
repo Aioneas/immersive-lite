@@ -1,27 +1,65 @@
 # Immersive Lite
 
-A lightweight, local-first bilingual web translation extension rebuilt from the historical open-source core of Immersive Translate.
+A lightweight patch of the official [Immersive Translate](https://immersivetranslate.com/) userscript.
 
-## Goals
+**No login. No cloud. No tracking. No pricing prompts.**
 
-- Keep only the core web-page bilingual translation experience
-- Keep local configuration and page rules
-- Add lightweight custom translation service support (OpenAI-compatible first)
-- Remove login, cloud sync, membership, pricing, telemetry, feedback funnels, donation prompts, and non-core growth UI
-- Prefer simple architecture over feature bloat
+Keeps only core bilingual web translation + custom translation services (OpenAI / OpenRouter / DeepSeek / any OpenAI-compatible API).
 
 ## Install (Userscript / iOS Safari)
 
-1. Install [Userscripts](https://apps.apple.com/app/userscripts/id1463298887) from App Store
+1. Install [Userscripts](https://apps.apple.com/app/userscripts/id1463298887) from App Store (iOS) or [Tampermonkey](https://www.tampermonkey.net/) (desktop)
 2. Tap the link below to install:
 
    **[Install immersive-lite.user.js](https://raw.githubusercontent.com/Aioneas/immersive-lite/main/dist/userscript/immersive-lite.user.js)**
 
-3. Open any web page → tap the blue **译** button to translate
-4. Tap the **⚙** button to configure your OpenAI-compatible provider
+3. Open any web page → use the floating button to translate
 
-Supports: **OpenAI / OpenRouter / DeepSeek / any `/v1/chat/completions` compatible API**.
+## What's removed
 
+- Account login / cloud sync
+- Pricing / subscription / upgrade prompts
+- Pro / Max membership gates
+- Telemetry / analytics / performance reporting
+- Feedback / customer service links
+- Cloud config fetching
+
+## What's kept
+
+- Core bilingual web page translation
+- All built-in translation services (Google, DeepL, Bing, Yandex, etc.)
+- Custom OpenAI-compatible translation services
+- Local settings panel
+- Page rules / special rules
+- Translation cache
+- Dual-language display styles
+
+## How it works
+
+This is a **patched version** of the official `immersive-translate.user.js` (v1.28.2).
+
+The patch script (`scripts/patch.mjs`):
+- Replaces cloud/analytics endpoints with localhost (silently fails)
+- Injects a fetch interceptor to block cloud requests
+- Neutralizes login/upgrade modal functions
+- Disables telemetry flags
+
+## Rebuild from latest official
+
+```bash
+# Download latest official userscript
+curl -L -o scripts/original.user.js https://download.immersivetranslate.com/immersive-translate.user.js
+# Run patch
+node scripts/patch.mjs
+# Output: immersive-lite.user.js
+cp immersive-lite.user.js dist/userscript/
+```
+
+## License
+
+The original Immersive Translate userscript is proprietary.
+This patch is for **personal use only** and is not redistributed as a standalone product.
+The patch script itself is MIT licensed.
 ## Base and references
 
 ### Base code
