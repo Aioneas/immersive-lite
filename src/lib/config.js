@@ -47,6 +47,7 @@ const twpConfig = (function () {
       apiKey: "",
       model: "gpt-4o-mini",
       fallbackService: "google",
+      extraHeaders: {},
       systemPrompt: "You are a translation engine. Translate the given HTML content into the target language faithfully. Preserve HTML structure, inline placeholders, and ordering. Return only translated HTML."
     }
   };

@@ -78,6 +78,11 @@ The following projects are studied for architecture and ideas, but their code is
 - Add GM storage fallback prototype
 - Keep pushing `openai_compatible` toward standalone userscript usage
 
+### v0.2.3
+- Bundle translationService into userscript output
+- Allow OpenAI-compatible requests to use runtime.request (GM)
+- Support extra headers for third-party OpenAI-compatible gateways
+
 ### v0.3
 - Userscript/Safari build target usable on-device
 - More provider presets (DeepSeek-compatible / OpenRouter-compatible)

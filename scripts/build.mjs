@@ -66,6 +66,8 @@ function buildUserscript() {
     path.join(srcDir, 'lib', 'platformInfo.js'),
     path.join(srcDir, 'lib', 'i18n.js'),
     path.join(srcDir, 'lib', 'specialRules.js'),
+    path.join(srcDir, 'background', 'translationCache.js'),
+    path.join(srcDir, 'background', 'translationService.js'),
     path.join(srcDir, 'contentScript', 'showOriginal.js'),
     path.join(srcDir, 'contentScript', 'enhance.js'),
     path.join(srcDir, 'contentScript', 'pageTranslator.js'),

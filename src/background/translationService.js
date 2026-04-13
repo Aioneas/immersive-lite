@@ -11,6 +11,29 @@ const translationService = (function () {
     return baseUrl.replace(/\/$/, "");
   }
 
+  function buildOpenAICompatibleEndpoint(baseUrl) {
+    if (baseUrl.endsWith("/v1/chat/completions")) return baseUrl;
+    if (baseUrl.endsWith("/v1")) return baseUrl + "/chat/completions";
+    return baseUrl + "/v1/chat/completions";
+  }
+
+  async function requestWithRuntime(details) {
+    if (typeof imtRuntime !== "undefined" && imtRuntime.request) {
+      return await imtRuntime.request(details);
+    }
+    const response = await fetch(details.url, {
+      method: details.method || "GET",
+      headers: details.headers,
+      body: details.body,
+    });
+    return {
+      ok: response.ok,
+      status: response.status,
+      text: await response.text(),
+      json: async function () { return JSON.parse(this.text); },
+    };
+  }
+
   function buildOpenAICompatibleConfigPatch(presetKey) {
     switch (presetKey) {
       case "openai":
@@ -24,6 +47,10 @@ const translationService = (function () {
           providerPreset: "openrouter",
           baseUrl: "https://openrouter.ai/api",
           model: "openai/gpt-4o-mini",
+          extraHeaders: {
+            "HTTP-Referer": "https://github.com/Aioneas/immersive-lite",
+            "X-Title": "Immersive Lite",
+          },
         };
       case "deepseek":
         return {
@@ -86,14 +113,33 @@ const translationService = (function () {
   async function requestOpenAICompatibleTranslation(sourceLanguage, targetLanguage, sourceArray) {
     const cfg = twpConfig.get("openaiCompatible") || {};
     const baseUrl = normalizeOpenaiBaseUrl(cfg.baseUrl);
+    const endpoint = buildOpenAICompatibleEndpoint(baseUrl);
     const apiKey = (cfg.apiKey || "").trim();
     const model = (cfg.model || "gpt-4o-mini").trim();
     const systemPrompt = (cfg.systemPrompt || "You are a translation engine. Translate the given HTML content into the target language faithfully. Preserve HTML structure, inline placeholders, and ordering. Return only translated HTML.").trim();
-    if (!apiKey) {
+    const providerPreset = cfg.providerPreset || "custom";
+    if (!apiKey && providerPreset !== "custom") {
       throw new Error("OpenAI-compatible API key is missing. Please configure it in Options > Translations.");
     }
+    if (providerPreset === "custom" && !apiKey) {
+      console.warn("[openai_compatible] API key is empty for custom preset; request will be sent without Authorization header.");
+    }
 
-    const payload = {
+    const headers = {
+      "Content-Type": "application/json",
+    };
+    if (apiKey) headers.Authorization = "Bearer " + apiKey;
+    if (providerPreset === "openrouter" && !headers["HTTP-Referer"]) {
+      headers["HTTP-Referer"] = "https://github.com/Aioneas/immersive-lite";
+      headers["X-Title"] = "Immersive Lite";
+    }
+    if (cfg.extraHeaders && typeof cfg.extraHeaders === "object") {
+      for (const key of Object.keys(cfg.extraHeaders)) {
+        headers[key] = cfg.extraHeaders[key];
+      }
+    }
+
+    const payloadBase = {
       model,
       temperature: 0,
       response_format: { type: "json_object" },
@@ -113,21 +159,42 @@ const translationService = (function () {
       ],
     };
 
-    const response = await fetch(baseUrl + "/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: "Bearer " + apiKey,
-      },
-      body: JSON.stringify(payload),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error("OpenAI-compatible request failed: " + response.status + " " + errorText);
+    async function sendPayload(payload) {
+      const requestBody = JSON.stringify(payload);
+      const response = await requestWithRuntime({
+        url: endpoint,
+        method: "POST",
+        headers,
+        body: requestBody,
+      });
+      const text = response.text || "";
+      if (!response.ok) {
+        const err = new Error("OpenAI-compatible request failed: " + response.status + " " + text);
+        err.responseText = text;
+        err.status = response.status;
+        throw err;
+      }
+      try {
+        return JSON.parse(text);
+      } catch (e) {
+        throw new Error("OpenAI-compatible response parse failed: " + text.slice(0, 200));
+      }
     }
 
-    const data = await response.json();
+    let data;
+    try {
+      data = await sendPayload(payloadBase);
+    } catch (e) {
+      const text = (e && (e.responseText || e.message)) || "";
+      if (String(text).includes("response_format")) {
+        const payloadFallback = { ...payloadBase };
+        delete payloadFallback.response_format;
+        data = await sendPayload(payloadFallback);
+      } else {
+        throw e;
+      }
+    }
+
     const content = data?.choices?.[0]?.message?.content;
     if (!content) throw new Error("OpenAI-compatible response missing content");
 
@@ -156,9 +223,13 @@ const translationService = (function () {
       } catch (e) {
         console.error("[openai_compatible]", e);
         if (fallbackService && fallbackService !== "none") {
-          const service = serviceList.get(fallbackService) || serviceList.get("google");
-          const fallbackResults = await service.translate(sourceLanguage, targetLanguage, [sourceArray]);
-          results.push(fallbackResults[0]);
+          try {
+            const service = serviceList.get(fallbackService) || serviceList.get("google");
+            const fallbackResults = await service.translate(sourceLanguage, targetLanguage, [sourceArray]);
+            results.push(fallbackResults[0]);
+          } catch (fallbackError) {
+            throw e;
+          }
         } else {
           throw e;
         }

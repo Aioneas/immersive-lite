@@ -101,6 +101,8 @@
   chrome.extension = chrome.extension || { inIncognitoContext: false };
   chrome.runtime = chrome.runtime || {};
   chrome.runtime.getManifest = chrome.runtime.getManifest || (() => ({ version: "0.1.0", commands: {} }));
+  chrome.runtime.reload = chrome.runtime.reload || (() => {});
+  chrome.runtime.getURL = chrome.runtime.getURL || ((path) => path);
   chrome.runtime.onMessage = chrome.runtime.onMessage || { addListener(fn) { runtimeListeners.push(fn); } };
   chrome.runtime.sendMessage = function (request, callback) {
     if (request && request.action === "getTabHostName") return callback && callback(location.hostname);

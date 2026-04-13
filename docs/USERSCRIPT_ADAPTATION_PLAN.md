@@ -32,11 +32,13 @@
 
 ## 下一步计划
 
-### Step 2
+### Step 2 (in progress)
 - 让翻译服务优先依赖 runtime.request，而不是直接 fetch
 - 逐步让 `openai_compatible` 在 userscript 模式下也可独立工作
 - 加入 userscript shim 与 GM storage fallback 原型
 - 提供 userscript 最小控制器（悬浮按钮 + 菜单配置）
+- 将 `translationService` 直接打包进 userscript 产物
+- 为第三方 OpenAI-compatible 添加 extra headers 入口
 
 ### Step 3
 - 为配置层增加 GM storage fallback

@@ -23,6 +23,8 @@ function fillOpenaiCompatibleSettings() {
     if ($("#openaiApiKey")) $("#openaiApiKey").value = config.apiKey || ""
     if ($("#openaiModel")) $("#openaiModel").value = config.model || "gpt-4o-mini"
     if ($("#openaiFallbackService")) $("#openaiFallbackService").value = config.fallbackService || "google"
+    if ($("#openaiExtraHeaderKey")) $("#openaiExtraHeaderKey").value = ""
+    if ($("#openaiExtraHeaderValue")) $("#openaiExtraHeaderValue").value = ""
     if ($("#openaiSystemPrompt")) $("#openaiSystemPrompt").value = config.systemPrompt || ""
 }
 
@@ -34,6 +36,12 @@ function applyOpenaiProviderPreset(presetKey) {
 
 function saveOpenaiCompatibleSettings() {
     const current = twpConfig.get("openaiCompatible") || {}
+    const extraHeaderKey = $("#openaiExtraHeaderKey") ? $("#openaiExtraHeaderKey").value.trim() : ""
+    const extraHeaderValue = $("#openaiExtraHeaderValue") ? $("#openaiExtraHeaderValue").value.trim() : ""
+    let extraHeaders = current.extraHeaders || {}
+    if (extraHeaderKey) {
+        extraHeaders = { ...extraHeaders, [extraHeaderKey]: extraHeaderValue }
+    }
     const next = {
         ...current,
         providerPreset: $("#openaiProviderPreset") ? $("#openaiProviderPreset").value : (current.providerPreset || "openai"),
@@ -41,6 +49,7 @@ function saveOpenaiCompatibleSettings() {
         apiKey: $("#openaiApiKey") ? $("#openaiApiKey").value.trim() : current.apiKey,
         model: $("#openaiModel") ? $("#openaiModel").value.trim() : current.model,
         fallbackService: $("#openaiFallbackService") ? $("#openaiFallbackService").value : (current.fallbackService || "google"),
+        extraHeaders,
         systemPrompt: $("#openaiSystemPrompt") ? $("#openaiSystemPrompt").value.trim() : current.systemPrompt,
     }
     twpConfig.set("openaiCompatible", next)

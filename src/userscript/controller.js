@@ -5,22 +5,36 @@
     const current = twpConfig.get("openaiCompatible") || {};
     const preset = prompt("Provider preset (openai/openrouter/deepseek/custom)", current.providerPreset || "openai");
     if (preset == null) return;
+    const trimmedPreset = preset.trim().toLowerCase();
+    const presetValue = (trimmedPreset === "openrouter" || trimmedPreset === "deepseek" || trimmedPreset === "openai") ? trimmedPreset : "custom";
     const baseUrl = prompt("Base URL", current.baseUrl || "https://api.openai.com");
     if (baseUrl == null) return;
-    const apiKey = prompt("API Key", current.apiKey || "");
+    const apiKey = prompt("API Key (optional)", current.apiKey || "");
     if (apiKey == null) return;
     const model = prompt("Model", current.model || "gpt-4o-mini");
     if (model == null) return;
     const fallbackService = prompt("Fallback service (google/yandex/none)", current.fallbackService || "google");
     if (fallbackService == null) return;
+    const extraHeaderKey = prompt("Extra header key (optional)", "");
+    if (extraHeaderKey == null) return;
+    let extraHeaders = current.extraHeaders || {};
+    if (extraHeaderKey.trim()) {
+      const extraHeaderValue = prompt("Extra header value", "");
+      if (extraHeaderValue == null) return;
+      extraHeaders = { ...extraHeaders, [extraHeaderKey.trim()]: extraHeaderValue };
+    }
+
+    const baseUrlValue = baseUrl.trim() || (presetValue === "openrouter" ? "https://openrouter.ai/api" : presetValue === "deepseek" ? "https://api.deepseek.com" : "https://api.openai.com");
+    const modelValue = model.trim() || (presetValue === "deepseek" ? "deepseek-chat" : presetValue === "openrouter" ? "openai/gpt-4o-mini" : "gpt-4o-mini");
 
     twpConfig.set("openaiCompatible", {
       ...current,
-      providerPreset: preset.trim() || "custom",
-      baseUrl: baseUrl.trim(),
+      providerPreset: presetValue,
+      baseUrl: baseUrlValue,
       apiKey: apiKey.trim(),
-      model: model.trim(),
+      model: modelValue,
       fallbackService: fallbackService.trim() || "google",
+      extraHeaders,
     });
     twpConfig.set("pageTranslatorService", "openai_compatible");
     alert("Immersive Lite userscript settings saved.");
