@@ -10,6 +10,18 @@ A lightweight, local-first bilingual web translation extension rebuilt from the 
 - Remove login, cloud sync, membership, pricing, telemetry, feedback funnels, donation prompts, and non-core growth UI
 - Prefer simple architecture over feature bloat
 
+## Install (Userscript / iOS Safari)
+
+1. Install [Userscripts](https://apps.apple.com/app/userscripts/id1463298887) from App Store
+2. Tap the link below to install:
+
+   **[Install immersive-lite.user.js](https://raw.githubusercontent.com/Aioneas/immersive-lite/main/dist/userscript/immersive-lite.user.js)**
+
+3. Open any web page → tap the blue **译** button to translate
+4. Tap the **⚙** button to configure your OpenAI-compatible provider
+
+Supports: **OpenAI / OpenRouter / DeepSeek / any `/v1/chat/completions` compatible API**.
+
 ## Base and references
 
 ### Base code

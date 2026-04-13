@@ -1,0 +1,97 @@
+{
+    "manifest_version": 3,
+    "default_locale": "en",
+    "name": "Immersive Lite",
+    "description": "Local-first lightweight bilingual web translation.",
+    "version": "0.1.0",
+    "homepage_url": "https://github.com/Aioneas/immersive-lite",
+
+    "commands": {
+        "hotkey-toggle-translation": {
+            "suggested_key": {
+                "default": "Ctrl+T",
+                "mac": "MacCtrl+T"
+            },
+            "description": "__MSG_lblSwitchTranslatedAndOriginal__"
+        },
+        "hotkey-toggle-dual": {
+            "suggested_key": {
+                "default": "Ctrl+D",
+                "mac": "MacCtrl+D"
+            },
+            "description": "__MSG_lblSwitchDual__"
+        }
+    },
+
+    "icons": {
+        "32": "/icons/icon-32.png",
+        "64": "/icons/icon-64.png",
+        "128": "/icons/icon-128.png"
+    },
+
+    "permissions": [
+        "storage",
+        "activeTab",
+        "contextMenus"
+    ],
+    "host_permissions":[
+        "<all_urls>"
+    ],
+
+    "optional_permissions": [
+        "webNavigation"
+    ],
+    "web_accessible_resources": [{
+    "resources":[    "/icons/icon-32.png",
+        "/icons/google-translate-32.png",
+        "/icons/yandex-translate-32.png",
+        "/icons/swap-32.png",
+        "/contentScript/css/*"
+        ],
+        "matches":["<all_urls>"]
+    }],
+
+    "options_ui": {
+        "page": "/options/options.html",
+        "open_in_tab": true,
+        "browser_style": false
+    },
+
+    "action": {
+        "browser_style": false,
+        "default_icon": "/icons/icon-32.png",
+        "default_title": "__MSG_pageActionTitle__"
+    },
+
+    "content_scripts": [{
+            "matches": ["<all_urls>"],
+            "run_at": "document_start",
+            "all_frames": false,
+            "js": ["/contentScript/checkScriptIsInjected.js"]
+        },
+        {
+            "matches": ["<all_urls>"],
+            "run_at": "document_start",
+            "all_frames": true,
+            "match_about_blank": true,
+            "js": ["/lib/languages.js", "/lib/config.js", "/lib/platformInfo.js"]
+        },
+        {
+            "matches": ["<all_urls>"],
+            "run_at": "document_end",
+            "all_frames": true,
+            "match_about_blank": true,
+            "js": ["/lib/i18n.js", "/contentScript/showOriginal.js", "/lib/specialRules.js", "/contentScript/enhance.js", "/contentScript/pageTranslator.js"]
+        },
+        {
+            "matches": ["<all_urls>"],
+            "run_at": "document_end",
+            "all_frames": false,
+            "js": ["/contentScript/popupMobile.js"]
+        }
+    ],
+    "background": {
+      "service_worker": "background/background-entry.js"
+    }
+}
+
