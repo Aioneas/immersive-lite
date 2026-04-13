@@ -10,6 +10,10 @@
 // @grant        GM.setValue
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_deleteValue
+// @grant        GM.deleteValue
+// @grant        GM_registerMenuCommand
+// @grant        GM.registerMenuCommand
 // @connect      google.com
 // @connect      translate.googleapis.com
 // @connect      translate.yandex.net

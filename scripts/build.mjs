@@ -57,11 +57,30 @@ function buildChrome() {
 function buildUserscript() {
   const outDir = path.join(distDir, 'userscript');
   fs.mkdirSync(outDir, { recursive: true });
-  const source = path.join(srcDir, 'userscript', 'immersive-lite.user.js');
+  const files = [
+    path.join(srcDir, 'userscript', 'immersive-lite.user.js'),
+    path.join(srcDir, 'userscript', 'shim.js'),
+    path.join(srcDir, 'lib', 'runtime.js'),
+    path.join(srcDir, 'lib', 'languages.js'),
+    path.join(srcDir, 'lib', 'config.js'),
+    path.join(srcDir, 'lib', 'platformInfo.js'),
+    path.join(srcDir, 'lib', 'i18n.js'),
+    path.join(srcDir, 'lib', 'specialRules.js'),
+    path.join(srcDir, 'contentScript', 'showOriginal.js'),
+    path.join(srcDir, 'contentScript', 'enhance.js'),
+    path.join(srcDir, 'contentScript', 'pageTranslator.js'),
+    path.join(srcDir, 'userscript', 'controller.js'),
+  ];
+  let output = '';
+  for (const file of files) {
+    let text = fs.readFileSync(file, 'utf8');
+    if (file.endsWith('immersive-lite.user.js')) {
+      text = text.replaceAll('0.1.0', firefoxManifest.version);
+    }
+    output += text + '\n\n';
+  }
   const target = path.join(outDir, 'immersive-lite.user.js');
-  const firefoxVersion = firefoxManifest.version;
-  const text = fs.readFileSync(source, 'utf8').replaceAll('0.1.0', firefoxVersion);
-  fs.writeFileSync(target, text);
+  fs.writeFileSync(target, output);
   return target;
 }
 

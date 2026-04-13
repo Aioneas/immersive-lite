@@ -73,6 +73,11 @@ The following projects are studied for architecture and ideas, but their code is
 - Add preview userscript entry and userscript build target
 - Start reducing extension-only direct dependencies in shared libs
 
+### v0.2.2
+- Add userscript shim + minimal userscript controller
+- Add GM storage fallback prototype
+- Keep pushing `openai_compatible` toward standalone userscript usage
+
 ### v0.3
 - Userscript/Safari build target usable on-device
 - More provider presets (DeepSeek-compatible / OpenRouter-compatible)
