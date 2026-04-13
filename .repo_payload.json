@@ -1,0 +1,8 @@
+{
+  "name": "immersive-lite",
+  "description": "Local-first lightweight bilingual web translation rebuilt from the old open-source Immersive Translate core.",
+  "private": false,
+  "has_issues": true,
+  "has_projects": false,
+  "has_wiki": false
+}
