@@ -57,6 +57,27 @@ Immersive Lite 只做一件事：
 
 ---
 
+## 源码结构
+
+当前 userscript 源码已按职责拆分，后续维护以 `src/userscript/` 为主：
+
+- `immersive-lite.user.js`：userscript 头部元信息
+- `core.js`：全局状态、设置归一化、GM 存储、公共工具
+- `cache.js`：缓存键、缓存读写与裁剪
+- `provider-adapters.js`：请求发送、OpenAI-compatible 响应解析、接口地址构建
+- `dom-picker.js`：低价值文本过滤与 DOM 节点筛选
+- `translator.js`：批队列、并发调度、整页翻译 / 恢复原文
+- `settings.js`：设置面板 UI 与保存逻辑
+- `ui-fab.js`：悬浮球、拖动、贴边半隐藏与交互
+- `bootstrap.js`：启动入口与菜单命令注册
+
+构建产物仍然输出到：
+- `dist/userscript/immersive-lite.user.js`
+
+这样后续继续优化时，可以只改对应模块，而不需要再直接硬改 dist 单文件。
+
+---
+
 ## 当前性能策略
 
 当前实现采用 **稳定版批队列 + 缓存加速** 路线：

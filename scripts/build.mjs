@@ -29,16 +29,58 @@ function walk(dir, files = []) {
 
 function replaceVersionInHtml(dir, version) {
   for (const file of walk(dir)) {
-    if (!file.endsWith('.html')) continue;
-    const text = fs.readFileSync(file, 'utf8').replaceAll('__IMMERSIVE_TRANSLATE_VERSION__', version);
-    fs.writeFileSync(file, text);
+    if (file.endsWith('.html')) {
+      const text = fs.readFileSync(file, 'utf8').replaceAll('__IMMERSIVE_TRANSLATE_VERSION__', version);
+      fs.writeFileSync(file, text);
+      continue;
+    }
+    if (file.endsWith('userscript/immersive-lite.user.js')) {
+      const text = fs.readFileSync(file, 'utf8').replaceAll('__IMMERSIVE_LITE_VERSION__', version);
+      fs.writeFileSync(file, text);
+    }
   }
+}
+
+function getUserscriptFiles() {
+  return [
+    path.join(srcDir, 'userscript', 'immersive-lite.user.js'),
+    path.join(srcDir, 'userscript', 'core.js'),
+    path.join(srcDir, 'userscript', 'cache.js'),
+    path.join(srcDir, 'userscript', 'dom-picker.js'),
+    path.join(srcDir, 'userscript', 'provider-adapters.js'),
+    path.join(srcDir, 'userscript', 'translator.js'),
+    path.join(srcDir, 'userscript', 'settings.js'),
+    path.join(srcDir, 'userscript', 'ui-fab.js'),
+    path.join(srcDir, 'userscript', 'bootstrap.js'),
+  ];
+}
+
+function bundleUserscript(version) {
+  let output = '';
+  for (const file of getUserscriptFiles()) {
+    let text = fs.readFileSync(file, 'utf8');
+    text = text.replaceAll('__IMMERSIVE_LITE_VERSION__', version);
+    output += text + '\n\n';
+  }
+  return output;
+}
+
+function writeBundledUserscript(targetDir, version) {
+  const userscriptDir = path.join(targetDir, 'userscript');
+  fs.mkdirSync(userscriptDir, { recursive: true });
+  for (const entry of fs.readdirSync(userscriptDir, { withFileTypes: true })) {
+    if (entry.isFile() && entry.name.endsWith('.js') && entry.name !== 'immersive-lite.user.js') {
+      fs.rmSync(path.join(userscriptDir, entry.name), { force: true });
+    }
+  }
+  fs.writeFileSync(path.join(userscriptDir, 'immersive-lite.user.js'), bundleUserscript(version));
 }
 
 function buildFirefox() {
   const out = path.join(distDir, 'firefox');
   copyDir(srcDir, out);
   replaceVersionInHtml(out, firefoxManifest.version);
+  writeBundledUserscript(out, firefoxManifest.version);
   return out;
 }
 
@@ -51,38 +93,15 @@ function buildChrome() {
   fs.renameSync(mv3, mv2);
   const chromeManifest = JSON.parse(fs.readFileSync(mv2, 'utf8'));
   replaceVersionInHtml(out, chromeManifest.version);
+  writeBundledUserscript(out, chromeManifest.version);
   return out;
 }
 
 function buildUserscript() {
   const outDir = path.join(distDir, 'userscript');
   fs.mkdirSync(outDir, { recursive: true });
-  const files = [
-    path.join(srcDir, 'userscript', 'immersive-lite.user.js'),
-    path.join(srcDir, 'userscript', 'shim.js'),
-    path.join(srcDir, 'lib', 'runtime.js'),
-    path.join(srcDir, 'lib', 'languages.js'),
-    path.join(srcDir, 'lib', 'config.js'),
-    path.join(srcDir, 'lib', 'platformInfo.js'),
-    path.join(srcDir, 'lib', 'i18n.js'),
-    path.join(srcDir, 'lib', 'specialRules.js'),
-    path.join(srcDir, 'background', 'translationCache.js'),
-    path.join(srcDir, 'background', 'translationService.js'),
-    path.join(srcDir, 'contentScript', 'showOriginal.js'),
-    path.join(srcDir, 'contentScript', 'enhance.js'),
-    path.join(srcDir, 'contentScript', 'pageTranslator.js'),
-    path.join(srcDir, 'userscript', 'controller.js'),
-  ];
-  let output = '';
-  for (const file of files) {
-    let text = fs.readFileSync(file, 'utf8');
-    if (file.endsWith('immersive-lite.user.js')) {
-      text = text.replaceAll('0.1.0', firefoxManifest.version);
-    }
-    output += text + '\n\n';
-  }
   const target = path.join(outDir, 'immersive-lite.user.js');
-  fs.writeFileSync(target, output);
+  fs.writeFileSync(target, bundleUserscript(firefoxManifest.version));
   return target;
 }
 

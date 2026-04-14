@@ -1,0 +1,133 @@
+  function getProviderLabel(value) {
+    if (value === "openai") return "OpenAI";
+    if (value === "deepseek") return "DeepSeek";
+    if (value === "custom") return "自定义接口";
+    return value || "";
+  }
+
+  function buildModelOptions(prov, sel, inp, cur) {
+    const list = MODEL_PRESETS[prov] || ["custom"];
+    sel.innerHTML = list.map((m) => `<option value="${esc(m)}">${esc(m)}</option>`).join("");
+    if (list.includes(cur)) { sel.value = cur; inp.style.display = "none"; inp.value = ""; }
+    else { sel.value = "custom"; inp.style.display = "block"; inp.value = cur || ""; }
+  }
+
+  function openSettings() {
+    const existed = document.getElementById("iml-settings-overlay");
+    if (existed) { existed.style.display = "block"; return; }
+
+    const s = state.settings;
+    const root = document.createElement("div");
+    root.id = "iml-settings-overlay";
+    root.style.cssText = "position:fixed;inset:0;background:rgba(8,15,29,.46);backdrop-filter:blur(2px);z-index:2147483647;padding-top:env(safe-area-inset-top);";
+
+    const panel = document.createElement("div");
+    panel.style.cssText = "position:absolute;left:0;right:0;bottom:0;top:calc(env(safe-area-inset-top) + 8px);background:linear-gradient(180deg,#fff 0%,#f8fbff 100%);border-radius:18px 18px 0 0;padding:14px 14px calc(26px + env(safe-area-inset-bottom));overflow:auto;font:14px -apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;box-shadow:0 -12px 30px rgba(0,0,0,.16);";
+    panel.innerHTML = `
+      <div style="display:flex;justify-content:flex-start;align-items:center;margin-bottom:10px;">
+        <div>
+          <div style="font-size:16px;font-weight:700;color:#10213a;">Immersive Lite</div>
+          <div style="font-size:12px;color:#6f7f97;margin-top:2px;">稳定核心 + 批队列缓存 + 简化速度模式 v0.7</div>
+        </div>
+      </div>
+      <div style="display:grid;gap:10px;">
+        <div>
+          <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">翻译服务</label>
+          <select id="iml-provider" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;">
+            <option value="openai">OpenAI</option><option value="deepseek">DeepSeek</option><option value="custom">自定义接口</option>
+          </select>
+        </div>
+        <div>
+          <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">接口地址</label>
+          <input id="iml-apiinput" placeholder="支持完整地址，或只填基础域名" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;box-sizing:border-box" />
+        </div>
+        <div>
+          <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">API 密钥</label>
+          <input id="iml-key" type="password" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;box-sizing:border-box" />
+        </div>
+        <div>
+          <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">模型</label>
+          <select id="iml-model-select" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;"></select>
+          <input id="iml-model-custom" placeholder="自定义模型名" style="display:none;width:100%;margin-top:6px;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;box-sizing:border-box" />
+        </div>
+        <div style="display:flex;gap:8px;">
+          <div style="flex:1;">
+            <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">目标语言</label>
+            <input id="iml-lang" placeholder="zh-CN" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;box-sizing:border-box" />
+          </div>
+          <div style="flex:1;">
+            <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">显示模式</label>
+            <select id="iml-display" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;">
+              <option value="bilingual">双语对照</option><option value="translated">仅译文</option>
+            </select>
+          </div>
+        </div>
+        <div>
+          <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">速度模式</label>
+          <select id="iml-speed" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;">
+            <option value="balanced">稳定</option>
+            <option value="fast">推荐</option>
+            <option value="aggressive">极速</option>
+          </select>
+        </div>
+        <div style="font-size:12px;color:#6f7f97;line-height:1.5;padding:10px 12px;background:#f4f8ff;border-radius:10px;">
+          稳定：更稳、更省；推荐：默认，适合大多数页面；极速：更快看到结果。悬浮球支持拖动、记忆位置与靠边半隐藏。
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px;">
+        <button id="iml-save" style="padding:11px;border:none;border-radius:11px;background:linear-gradient(135deg,#1677ff,#4f9bff);color:#fff;font-weight:600;">保存</button>
+        <button id="iml-retranslate" style="padding:11px;border:none;border-radius:11px;background:#eef3fb;color:#334b73;">重新翻译</button>
+        <button id="iml-restore" style="padding:11px;border:none;border-radius:11px;background:#eef3fb;color:#334b73;">恢复原文</button>
+        <button id="iml-close2" style="padding:11px;border:none;border-radius:11px;background:#eef3fb;color:#334b73;">关闭</button>
+      </div>
+      <div id="iml-status" style="color:#6f7f97;font-size:12px;margin-top:10px;line-height:1.5;"></div>
+    `;
+    root.appendChild(panel);
+    document.documentElement.appendChild(root);
+
+    const $ = (id) => panel.querySelector("#" + id);
+    const provider=$("iml-provider"), apiinput=$("iml-apiinput"), key=$("iml-key");
+    const modelSelect=$("iml-model-select"), modelCustom=$("iml-model-custom");
+    const lang=$("iml-lang"), display=$("iml-display"), speed=$("iml-speed");
+    const status=$("iml-status");
+
+    state.statusEl = status; state.panel = root;
+    provider.value=s.provider||"openai"; apiinput.value=getApiInputValue(s);
+    key.value=s.apiKey||""; lang.value=s.targetLang||"zh-CN"; display.value=s.displayMode||"bilingual"; speed.value=s.speedMode||"fast";
+    buildModelOptions(provider.value, modelSelect, modelCustom, s.model||"");
+
+    provider.addEventListener("change", () => {
+      if (!apiinput.value.trim()) {
+        if (provider.value === "openai") apiinput.value = "https://api.openai.com";
+        if (provider.value === "deepseek") apiinput.value = "https://api.deepseek.com";
+      }
+      buildModelOptions(provider.value, modelSelect, modelCustom, "");
+    });
+    modelSelect.addEventListener("change", () => { modelCustom.style.display = modelSelect.value === "custom" ? "block" : "none"; });
+
+    function closePanel() { root.style.display = "none"; }
+    $("iml-close2").addEventListener("click", closePanel);
+    root.addEventListener("click", (e) => { if (e.target === root) closePanel(); });
+
+    $("iml-save").addEventListener("click", async () => {
+      const model = modelSelect.value === "custom" ? modelCustom.value.trim() : modelSelect.value;
+      if (!model) { setStatus("模型不能为空", true); return; }
+      const apiParsed = normalizeApiInput(apiinput.value.trim());
+      state.settings = norm({
+        ...state.settings,
+        provider: provider.value,
+        apiUrl: apiParsed.apiUrl,
+        baseUrl: apiParsed.baseUrl,
+        apiInputRaw: apiParsed.apiInputRaw,
+        apiKey: key.value.trim(),
+        model,
+        targetLang: lang.value.trim() || "zh-CN",
+        displayMode: display.value,
+        speedMode: speed.value,
+      });
+      await gmSet(KEY, state.settings);
+      setStatus("设置已保存");
+    });
+    $("iml-restore").addEventListener("click", () => restorePage());
+    $("iml-retranslate").addEventListener("click", async () => { restorePage(); await translatePage(); });
+  }

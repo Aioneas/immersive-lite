@@ -22,6 +22,7 @@
 (async function () {
   "use strict";
 
+
   const KEY = "immersive_lite_v7";
   const CACHE_KEY = "immersive_lite_cache_v1";
   const FAB_POS_KEY = "immersive_lite_fab_pos_v1";
@@ -181,118 +182,7 @@
     state.statusEl.textContent = msg || "";
     state.statusEl.style.color = err ? "#d32f2f" : "#6f7f97";
   }
-  function setFabState(busy) {
-    if (!state.fab) return;
-    state.fab.textContent = busy ? "…" : "译";
-    state.fab.style.opacity = busy ? ".34" : ".78";
-  }
 
-  function getFabSize() {
-    return 50;
-  }
-
-  function getFabHalfHiddenLeft(edge) {
-    const size = getFabSize();
-    const vw = window.innerWidth || document.documentElement.clientWidth || 390;
-    if (edge === "left") return -Math.round(size * 0.4);
-    if (edge === "right") return vw - Math.round(size * 0.6);
-    return 0;
-  }
-
-  function getFabDefaultPosition() {
-    return clampFabPosition((window.innerWidth || 390) - 64, (window.innerHeight || 844) - 94);
-  }
-
-  function getFabEdgeState(pos) {
-    const p = clampFabPosition(Number(pos.left || 0), Number(pos.top || 0));
-    const size = getFabSize();
-    const vw = window.innerWidth || document.documentElement.clientWidth || 390;
-    const leftGap = p.left;
-    const rightGap = vw - p.left - size;
-    if (leftGap <= 8) return "left";
-    if (rightGap <= 8) return "right";
-    return "free";
-  }
-
-  function clampFabPosition(left, top) {
-    const size = getFabSize();
-    const vw = window.innerWidth || document.documentElement.clientWidth || 390;
-    const vh = window.innerHeight || document.documentElement.clientHeight || 844;
-    const minLeft = 6;
-    const minTop = 6 + (window.visualViewport ? Math.max(0, window.visualViewport.offsetTop || 0) : 0);
-    const maxLeft = Math.max(minLeft, vw - size - 6);
-    const maxTop = Math.max(minTop, vh - size - 6);
-    return {
-      left: Math.max(minLeft, Math.min(left, maxLeft)),
-      top: Math.max(minTop, Math.min(top, maxTop)),
-    };
-  }
-
-  function applyFabPosition(pos, options) {
-    if (!state.fab || !pos) return;
-    const opts = options || {};
-    const p = clampFabPosition(Number(pos.left || 0), Number(pos.top || 0));
-    const edge = getFabEdgeState(p);
-    let left = p.left;
-    if (!opts.reveal && edge === "left") left = getFabHalfHiddenLeft("left");
-    if (!opts.reveal && edge === "right") left = getFabHalfHiddenLeft("right");
-
-    state.fab.style.left = left + "px";
-    state.fab.style.top = p.top + "px";
-    state.fab.style.right = "auto";
-    state.fab.style.bottom = "auto";
-    state.fab.dataset.edgeState = edge;
-  }
-
-  async function saveFabPosition(pos) {
-    state.fabPos = clampFabPosition(Number(pos.left || 0), Number(pos.top || 0));
-    await gmSet(FAB_POS_KEY, state.fabPos);
-  }
-
-  function normalizeFabPositionOnViewportChange() {
-    if (!state.fabPos) return;
-    const next = clampFabPosition(state.fabPos.left, state.fabPos.top);
-    const changed = next.left !== state.fabPos.left || next.top !== state.fabPos.top;
-    state.fabPos = next;
-    dockFab();
-    if (changed) gmSet(FAB_POS_KEY, next);
-  }
-
-  function revealFab() {
-    if (!state.fab || !state.fabPos) return;
-    applyFabPosition(state.fabPos, { reveal: true });
-    state.fab.style.opacity = state.translating ? ".42" : ".94";
-  }
-
-  function dockFab() {
-    if (!state.fab || !state.fabPos) return;
-    applyFabPosition(state.fabPos, { reveal: false });
-    state.fab.style.opacity = state.translating ? ".26" : ".66";
-  }
-
-  function scheduleFabDock(delay) {
-    if (!state.fab) return;
-    if (state.fabDockTimer) {
-      clearTimeout(state.fabDockTimer);
-      state.fabDockTimer = 0;
-    }
-    state.fabDockTimer = setTimeout(() => {
-      state.fabDockTimer = 0;
-      dockFab();
-    }, delay || 1200);
-  }
-
-  function setFabDraggingVisual(active) {
-    if (!state.fab) return;
-    state.fab.style.transition = active
-      ? "opacity .12s ease"
-      : "opacity .18s ease, transform .18s ease, background-color .18s ease, left .18s ease";
-    state.fab.style.backdropFilter = active ? "blur(6px)" : "blur(10px)";
-    state.fab.style.webkitBackdropFilter = active ? "blur(6px)" : "blur(10px)";
-    state.fab.style.boxShadow = active
-      ? "0 3px 10px rgba(0,0,0,.10),0 1px 3px rgba(0,0,0,.08)"
-      : "0 6px 16px rgba(0,0,0,.12),0 2px 6px rgba(0,0,0,.09)";
-  }
 
   function hashText(str) {
     let h = 2166136261;
@@ -322,6 +212,7 @@
     }
     await gmSet(CACHE_KEY, state.cache);
   }
+
 
   function isLikelyDateOrTime(text) {
     const t = String(text || "").trim();
@@ -383,6 +274,7 @@
       return true;
     });
   }
+
 
   async function postJSON(url, headers, body) {
     if (typeof GM !== "undefined" && GM.xmlHttpRequest) {
@@ -472,6 +364,7 @@
     }
     throw new Error("max retries");
   }
+
 
   async function translateText(text) {
     if (shouldSkipTranslationText(text)) return text;
@@ -655,6 +548,7 @@
     setStatus("已恢复原文");
   }
 
+
   function getProviderLabel(value) {
     if (value === "openai") return "OpenAI";
     if (value === "deepseek") return "DeepSeek";
@@ -789,6 +683,120 @@
     $("iml-retranslate").addEventListener("click", async () => { restorePage(); await translatePage(); });
   }
 
+
+  function setFabState(busy) {
+    if (!state.fab) return;
+    state.fab.textContent = busy ? "…" : "译";
+    state.fab.style.opacity = busy ? ".34" : ".78";
+  }
+
+  function getFabSize() {
+    return 50;
+  }
+
+  function getFabHalfHiddenLeft(edge) {
+    const size = getFabSize();
+    const vw = window.innerWidth || document.documentElement.clientWidth || 390;
+    if (edge === "left") return -Math.round(size * 0.4);
+    if (edge === "right") return vw - Math.round(size * 0.6);
+    return 0;
+  }
+
+  function getFabDefaultPosition() {
+    return clampFabPosition((window.innerWidth || 390) - 64, (window.innerHeight || 844) - 94);
+  }
+
+  function getFabEdgeState(pos) {
+    const p = clampFabPosition(Number(pos.left || 0), Number(pos.top || 0));
+    const size = getFabSize();
+    const vw = window.innerWidth || document.documentElement.clientWidth || 390;
+    const leftGap = p.left;
+    const rightGap = vw - p.left - size;
+    if (leftGap <= 8) return "left";
+    if (rightGap <= 8) return "right";
+    return "free";
+  }
+
+  function clampFabPosition(left, top) {
+    const size = getFabSize();
+    const vw = window.innerWidth || document.documentElement.clientWidth || 390;
+    const vh = window.innerHeight || document.documentElement.clientHeight || 844;
+    const minLeft = 6;
+    const minTop = 6 + (window.visualViewport ? Math.max(0, window.visualViewport.offsetTop || 0) : 0);
+    const maxLeft = Math.max(minLeft, vw - size - 6);
+    const maxTop = Math.max(minTop, vh - size - 6);
+    return {
+      left: Math.max(minLeft, Math.min(left, maxLeft)),
+      top: Math.max(minTop, Math.min(top, maxTop)),
+    };
+  }
+
+  function applyFabPosition(pos, options) {
+    if (!state.fab || !pos) return;
+    const opts = options || {};
+    const p = clampFabPosition(Number(pos.left || 0), Number(pos.top || 0));
+    const edge = getFabEdgeState(p);
+    let left = p.left;
+    if (!opts.reveal && edge === "left") left = getFabHalfHiddenLeft("left");
+    if (!opts.reveal && edge === "right") left = getFabHalfHiddenLeft("right");
+
+    state.fab.style.left = left + "px";
+    state.fab.style.top = p.top + "px";
+    state.fab.style.right = "auto";
+    state.fab.style.bottom = "auto";
+    state.fab.dataset.edgeState = edge;
+  }
+
+  async function saveFabPosition(pos) {
+    state.fabPos = clampFabPosition(Number(pos.left || 0), Number(pos.top || 0));
+    await gmSet(FAB_POS_KEY, state.fabPos);
+  }
+
+  function normalizeFabPositionOnViewportChange() {
+    if (!state.fabPos) return;
+    const next = clampFabPosition(state.fabPos.left, state.fabPos.top);
+    const changed = next.left !== state.fabPos.left || next.top !== state.fabPos.top;
+    state.fabPos = next;
+    dockFab();
+    if (changed) gmSet(FAB_POS_KEY, next);
+  }
+
+  function revealFab() {
+    if (!state.fab || !state.fabPos) return;
+    applyFabPosition(state.fabPos, { reveal: true });
+    state.fab.style.opacity = state.translating ? ".42" : ".94";
+  }
+
+  function dockFab() {
+    if (!state.fab || !state.fabPos) return;
+    applyFabPosition(state.fabPos, { reveal: false });
+    state.fab.style.opacity = state.translating ? ".26" : ".66";
+  }
+
+  function scheduleFabDock(delay) {
+    if (!state.fab) return;
+    if (state.fabDockTimer) {
+      clearTimeout(state.fabDockTimer);
+      state.fabDockTimer = 0;
+    }
+    state.fabDockTimer = setTimeout(() => {
+      state.fabDockTimer = 0;
+      dockFab();
+    }, delay || 1200);
+  }
+
+  function setFabDraggingVisual(active) {
+    if (!state.fab) return;
+    state.fab.style.transition = active
+      ? "opacity .12s ease"
+      : "opacity .18s ease, transform .18s ease, background-color .18s ease, left .18s ease";
+    state.fab.style.backdropFilter = active ? "blur(6px)" : "blur(10px)";
+    state.fab.style.webkitBackdropFilter = active ? "blur(6px)" : "blur(10px)";
+    state.fab.style.boxShadow = active
+      ? "0 3px 10px rgba(0,0,0,.10),0 1px 3px rgba(0,0,0,.08)"
+      : "0 6px 16px rgba(0,0,0,.12),0 2px 6px rgba(0,0,0,.09)";
+  }
+
   function mountUI() {
     if (document.getElementById("iml-ui-root")) return;
     const root = document.createElement("div");
@@ -901,6 +909,7 @@
     }
   }
 
+
   state.settings = await loadSettingsWithMigration();
   state.cache = (await gmGet(CACHE_KEY, {})) || {};
   state.fabPos = await gmGet(FAB_POS_KEY, null);
@@ -912,3 +921,5 @@
     GM_registerMenuCommand("Immersive Lite: 恢复原文", restorePage);
   }
 })();
+
+
