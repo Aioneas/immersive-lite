@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Immersive Lite (Core)
 // @namespace    https://github.com/Aioneas/immersive-lite
-// @version      0.3.0
+// @version      0.4.0
 // @description  Core-only bilingual page translation with custom OpenAI-compatible API (no login/cloud/pricing).
 // @author       Aioneas
 // @match        *://*/*
@@ -67,6 +67,8 @@
     fab: null,
     panel: null,
     statusEl: null,
+    runId: 0,
+    lastStatusAt: 0,
   };
 
   function esc(s) {
@@ -177,6 +179,45 @@
       }
       return true;
     });
+  }
+
+  function splitByViewport(nodes) {
+    const h = window.innerHeight || document.documentElement.clientHeight || 800;
+    const viewport = [];
+    const nonViewport = [];
+    for (const node of nodes) {
+      const rect = node.getBoundingClientRect();
+      const inView = rect.bottom > 0 && rect.top < h;
+      if (inView) viewport.push(node);
+      else nonViewport.push(node);
+    }
+    nonViewport.sort((a, b) => {
+      const ra = a.getBoundingClientRect();
+      const rb = b.getBoundingClientRect();
+      const ay = Math.abs(ra.top) + Math.abs(ra.height * 0.2);
+      const by = Math.abs(rb.top) + Math.abs(rb.height * 0.2);
+      return ay - by;
+    });
+    return { viewport, nonViewport };
+  }
+
+  function buildGroups(nodes, batchSize) {
+    const groups = [];
+    for (let i = 0; i < nodes.length; i += batchSize) {
+      const subNodes = nodes.slice(i, i + batchSize);
+      groups.push({
+        subNodes,
+        subTexts: subNodes.map((n) => (n.innerText || "").trim()),
+      });
+    }
+    return groups;
+  }
+
+  function shouldStatusUpdate() {
+    const now = Date.now();
+    if (now - state.lastStatusAt < 450) return false;
+    state.lastStatusAt = now;
+    return true;
   }
 
   async function postJSON(url, headers, body) {
@@ -309,6 +350,9 @@
   async function translatePage() {
     if (state.translating || state.translated) return;
     state.translating = true;
+    state.runId += 1;
+    state.lastStatusAt = 0;
+    const runId = state.runId;
     setFabBusy(true);
     setStatus("翻译中...");
 
@@ -319,43 +363,89 @@
         return;
       }
 
-      const texts = nodes.map((n) => (n.innerText || "").trim());
       const batchSize = Math.max(1, Number(state.settings.batchSize || 40));
-      const groups = [];
-      for (let i = 0; i < texts.length; i += batchSize) {
-        groups.push({ subTexts: texts.slice(i, i + batchSize), subNodes: nodes.slice(i, i + batchSize) });
-      }
+      const maxConcurrencySetting = Math.max(1, Number(state.settings.concurrency || 8));
+      const { viewport, nonViewport } = splitByViewport(nodes);
 
-      const maxConcurrency = Math.min(Number(state.settings.concurrency || 8), groups.length || 1);
-      let cursor = 0;
+      const urgentGroups = buildGroups(viewport, batchSize);
+      const backgroundGroups = buildGroups(nonViewport, batchSize);
+
+      const total = nodes.length;
       let done = 0;
+      let failedBatches = 0;
 
-      async function worker() {
-        while (cursor < groups.length) {
-          const idx = cursor++;
-          const g = groups[idx];
-          const translated = await translateBatch(g.subTexts);
-          for (let j = 0; j < g.subNodes.length; j++) {
-            const node = g.subNodes[j];
-            applyTranslation(node, g.subTexts[j] || "", translated[j] || "");
-            done += 1;
+      const updateProgress = (phase) => {
+        if (!shouldStatusUpdate()) return;
+        if (phase === "viewport") {
+          setStatus(`可见区域优先翻译中 ${done}/${total}`);
+        } else {
+          setStatus(`后台补全中 ${done}/${total}`);
+        }
+      };
+
+      async function runQueue(groups, phase) {
+        if (!groups.length) return;
+        const cursor = { i: 0 };
+        const workerCount = Math.min(maxConcurrencySetting, groups.length);
+
+        async function worker() {
+          while (true) {
+            if (!state.translating || runId !== state.runId) return;
+            const idx = cursor.i++;
+            if (idx >= groups.length) return;
+
+            const g = groups[idx];
+            try {
+              const translated = await translateBatch(g.subTexts);
+              if (!state.translating || runId !== state.runId) return;
+              for (let j = 0; j < g.subNodes.length; j++) {
+                const node = g.subNodes[j];
+                if (!node || !node.isConnected) continue;
+                applyTranslation(node, g.subTexts[j] || "", translated[j] || "");
+                done += 1;
+              }
+              updateProgress(phase);
+            } catch (e) {
+              failedBatches += 1;
+              console.error("[immersive-lite] batch failed", e);
+            }
           }
         }
+
+        await Promise.all(Array.from({ length: workerCount }, () => worker()));
       }
 
-      await Promise.all(Array.from({ length: maxConcurrency }, () => worker()));
+      await runQueue(urgentGroups, "viewport");
+      if (!state.translating || runId !== state.runId) return;
+
+      if (backgroundGroups.length > 0) {
+        if (viewport.length > 0) setStatus("可见区域已完成，后台继续补全...");
+        await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+        await runQueue(backgroundGroups, "background");
+      }
+
+      if (!state.translating || runId !== state.runId) return;
+
       state.translated = done > 0;
-      setStatus(state.translated ? "" : "无可翻译内容");
+      if (failedBatches > 0) {
+        setStatus(`已完成 ${done}/${total}，${failedBatches} 批失败`, true);
+      } else {
+        setStatus(state.translated ? "" : "无可翻译内容");
+      }
     } catch (e) {
       setStatus("翻译失败: " + (e?.message || e), true);
       console.error("[immersive-lite] translate failed", e);
     } finally {
-      state.translating = false;
-      setFabBusy(false);
+      if (runId === state.runId) {
+        state.translating = false;
+        setFabBusy(false);
+      }
     }
   }
 
   function restorePage() {
+    state.runId += 1;
+    state.translating = false;
     const nodes = Array.from(document.querySelectorAll("[data-iml-translated='1']"));
     for (const n of nodes) {
       const html = state.originalHTML.get(n);
@@ -363,6 +453,7 @@
       n.removeAttribute("data-iml-translated");
     }
     state.translated = false;
+    setFabBusy(false);
     setStatus("已恢复原文");
   }
 
