@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Immersive Lite (Core)
 // @namespace    https://github.com/Aioneas/immersive-lite
-// @version      0.5.0
+// @version      0.5.1
 // @description  Core-only bilingual page translation with custom OpenAI-compatible API (no login/cloud/pricing).
 // @author       Aioneas
 // @match        *://*/*
@@ -529,124 +529,75 @@
     setFabBusy(true);
     setStatus("翻译中...");
 
-    state.pending = [];
-    state.pendingSet = new Set();
-    state.nodeKeyMap = new WeakMap();
-    state.nodeSeq = 0;
-    state.activeWorkers = 0;
-    state.workerTarget = 0;
-    state.doneCount = 0;
-    state.totalCount = 0;
-    state.failedBatches = 0;
-    state.lastActivityAt = Date.now();
-    state.kickWorkers = null;
-    state.lastScrollY = window.scrollY || window.pageYOffset || 0;
-    state.scrollDir = 1;
-
-    const batchSize = Math.max(1, Number(state.settings.batchSize || 120));
-    const maxConcurrency = Math.max(1, Number(state.settings.concurrency || 24));
-
-    function ensureWorkers() {
-      while (state.activeWorkers < state.workerTarget && state.translating && runId === state.runId) {
-        worker();
-      }
-    }
-
-    state.kickWorkers = ensureWorkers;
-
-    function finalizeIfIdle() {
-      if (!state.translating || runId !== state.runId) return;
-      const idleFor = Date.now() - state.lastActivityAt;
-      const noWork = state.pending.length === 0 && state.activeWorkers === 0;
-
-      if (!noWork || idleFor < 850) {
-        if (state.finishTimer) clearTimeout(state.finishTimer);
-        state.finishTimer = setTimeout(finalizeIfIdle, 220);
+    try {
+      const nodes = pickNodes();
+      if (!nodes.length) {
+        setStatus("没找到可翻译文本", true);
         return;
       }
 
-      state.translated = state.doneCount > 0;
-      state.translating = false;
-      state.workerTarget = 0;
-      state.kickWorkers = null;
-      setFabBusy(false);
-      updateLiveStatus();
-      if (state.finishTimer) {
-        clearTimeout(state.finishTimer);
-        state.finishTimer = 0;
-      }
-      unbindLiveFeed();
-    }
+      const batchSize = Math.max(1, Number(state.settings.batchSize || 120));
+      const maxConcurrency = Math.max(1, Number(state.settings.concurrency || 24));
+      const { viewport, nonViewport } = splitByViewport(nodes);
+      const orderedNodes = viewport.concat(nonViewport);
+      const groups = buildGroups(orderedNodes, batchSize);
 
-    async function worker() {
-      state.activeWorkers += 1;
-      try {
-        while (state.translating && runId === state.runId) {
-          if (state.pending.length === 0) {
-            const added = queueViewportFirst();
-            if (added > 0) state.lastActivityAt = Date.now();
-            if (added === 0) {
-              await sleep(60);
-              if (state.pending.length === 0) break;
-            }
-          }
+      const total = orderedNodes.length;
+      let done = 0;
+      let failedBatches = 0;
+      let cursor = 0;
 
-          const batchItems = popQueueBatch(batchSize);
-          if (!batchItems.length) {
-            await sleep(30);
-            continue;
-          }
+      const updateProgress = () => {
+        if (!shouldStatusUpdate()) return;
+        setStatus(`翻译中 ${done}/${total}`);
+      };
 
+      async function worker() {
+        while (true) {
+          if (!state.translating || runId !== state.runId) return;
+          const idx = cursor++;
+          if (idx >= groups.length) return;
+
+          const g = groups[idx];
           try {
-            const translated = await translateBatch(batchItems.map((i) => i.text));
+            const translated = await translateBatch(g.subTexts);
             if (!state.translating || runId !== state.runId) return;
-            for (let i = 0; i < batchItems.length; i++) {
-              const it = batchItems[i];
-              if (!it.node || !it.node.isConnected) continue;
-              applyTranslation(it.node, it.text || "", translated[i] || "");
-              state.doneCount += 1;
+
+            for (let i = 0; i < g.subNodes.length; i++) {
+              const node = g.subNodes[i];
+              if (!node || !node.isConnected) continue;
+              applyTranslation(node, g.subTexts[i] || "", translated[i] || "");
+              done += 1;
             }
-            state.lastActivityAt = Date.now();
-            updateLiveStatus();
+            updateProgress();
           } catch (e) {
-            state.failedBatches += 1;
-            state.lastActivityAt = Date.now();
+            failedBatches += 1;
             console.error("[immersive-lite] batch failed", e);
-            updateLiveStatus();
           }
 
           await new Promise((resolve) => requestAnimationFrame(() => resolve()));
         }
-      } finally {
-        state.activeWorkers -= 1;
-        ensureWorkers();
-        finalizeIfIdle();
-      }
-    }
-
-    try {
-      const added = drainCandidateNodes(true);
-      if (!added) {
-        setStatus("没找到可翻译文本", true);
-        state.translating = false;
-        setFabBusy(false);
-        return;
       }
 
-      bindLiveFeed(runId);
-      updateLiveStatus();
+      const workerCount = Math.min(maxConcurrency, groups.length || 1);
+      await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
-      state.workerTarget = Math.min(maxConcurrency, Math.max(4, Math.ceil(maxConcurrency * 0.75)));
-      ensureWorkers();
-      finalizeIfIdle();
+      if (!state.translating || runId !== state.runId) return;
+      state.translated = done > 0;
+
+      if (failedBatches > 0) {
+        setStatus(`已完成 ${done}/${total}，${failedBatches} 批失败`, true);
+      } else {
+        setStatus("");
+      }
     } catch (e) {
       setStatus("翻译失败: " + (e?.message || e), true);
       console.error("[immersive-lite] translate failed", e);
-      state.translating = false;
-      state.workerTarget = 0;
-      state.kickWorkers = null;
-      setFabBusy(false);
-      unbindLiveFeed();
+    } finally {
+      if (runId === state.runId) {
+        state.translating = false;
+        setFabBusy(false);
+      }
     }
   }
 
@@ -654,6 +605,7 @@
     state.runId += 1;
     state.translating = false;
     unbindLiveFeed();
+
     state.pending = [];
     state.pendingSet = new Set();
     state.nodeKeyMap = new WeakMap();
@@ -709,7 +661,7 @@
       <div style="display:flex;justify-content:flex-start;align-items:center;margin-bottom:10px;">
         <div>
           <div style="font-size:16px;font-weight:700;color:#10213a;">Immersive Lite</div>
-          <div style="font-size:12px;color:#6f7f97;margin-top:2px;">轻量流式网页翻译</div>
+          <div style="font-size:12px;color:#6f7f97;margin-top:2px;">轻量快速整页翻译</div>
         </div>
       </div>
 
