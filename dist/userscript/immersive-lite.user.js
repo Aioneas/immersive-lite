@@ -48,7 +48,7 @@
   const DEFAULT = {
     provider: "openai",
     apiUrl: "",
-    baseUrl: "https://openrouter.ai/api",
+    baseUrl: "https://api.openai.com",
     apiKey: "",
     model: "gpt-5.4",
     targetLang: "zh-CN",
@@ -239,7 +239,7 @@
 
     const headers = { "Content-Type": "application/json" };
     if (s.apiKey) headers.Authorization = "Bearer " + s.apiKey;
-    if (s.provider === "openrouter") {
+    if (s.provider === "custom") {
       headers["HTTP-Referer"] = "https://github.com/Aioneas/immersive-lite";
       headers["X-Title"] = "Immersive Lite";
     }
@@ -476,7 +476,7 @@
     state.statusEl = status;
     state.panel = root;
 
-    provider.value = s.provider || "openrouter";
+    provider.value = s.provider || "openai";
     apiurl.value = s.apiUrl || "";
     base.value = s.baseUrl || "";
     key.value = s.apiKey || "";
