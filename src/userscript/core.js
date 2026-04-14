@@ -1,6 +1,6 @@
   const KEY = "immersive_lite_v7";
   const CACHE_KEY = "immersive_lite_cache_v1";
-  const FAB_POS_KEY = "immersive_lite_fab_pos_v1";
+  const FAB_POS_KEY = "immersive_lite_fab_pos_v2";
   const MODEL_PRESETS = {
     openai: [
       "gpt-5.4","gpt-5.3","gpt-5.2","gpt-5.1","gpt-5",
@@ -35,6 +35,8 @@
     settings: { ...DEFAULT },
     originalHTML: new WeakMap(),
     fab: null,
+    fabRoot: null,
+    fabHost: null,
     panel: null,
     statusEl: null,
     runId: 0,

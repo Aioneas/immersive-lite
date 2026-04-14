@@ -1,6 +1,6 @@
 {
   "name": "immersive-lite",
-  "version": "0.8.7",
+  "version": "0.8.8",
   "browserslist": [
     "firefox 63",
     "chrome 70"

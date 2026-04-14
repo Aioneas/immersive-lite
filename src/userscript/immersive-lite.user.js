@@ -5,6 +5,7 @@
 // @description  Core-only bilingual page translation with custom OpenAI-compatible API (no login/cloud/pricing).
 // @author       Aioneas
 // @match        *://*/*
+// @noframes
 // @grant        GM.getValue
 // @grant        GM.setValue
 // @grant        GM_getValue

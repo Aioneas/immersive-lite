@@ -3,7 +3,7 @@
     "default_locale": "en",
     "name": "Immersive Lite",
     "description": "Local-first lightweight bilingual web translation.",
-    "version": "0.8.7",
+    "version": "0.8.8",
     "homepage_url": "https://github.com/Aioneas/immersive-lite",
 
     "commands": {

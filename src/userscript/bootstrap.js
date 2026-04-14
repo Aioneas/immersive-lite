@@ -1,3 +1,5 @@
+  if (window.self !== window.top) return;
+
   state.settings = await loadSettingsWithMigration();
   state.cache = (await gmGet(CACHE_KEY, {})) || {};
   state.fabPos = await gmGet(FAB_POS_KEY, null);
