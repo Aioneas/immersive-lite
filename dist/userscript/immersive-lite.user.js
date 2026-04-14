@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Immersive Lite (Core)
 // @namespace    https://github.com/Aioneas/immersive-lite
-// @version      0.8.4
+// @version      0.8.6
 // @description  Core-only bilingual page translation with custom OpenAI-compatible API (no login/cloud/pricing).
 // @author       Aioneas
 // @match        *://*/*
@@ -116,6 +116,19 @@
     if (!s) return "";
     return /^https?:\/\//i.test(s) ? s : `https://${s}`;
   }
+  function normalizeApiInput(raw) {
+    const v = ensureHttp(raw || "").replace(/\/$/, "");
+    if (!v) return { apiUrl: "", baseUrl: "" };
+    if (/(\/v\d+)?\/chat\/completions$/i.test(v)) {
+      return { apiUrl: v, baseUrl: "" };
+    }
+    return { apiUrl: "", baseUrl: v };
+  }
+
+  function getApiInputValue(settings) {
+    return String(settings.apiUrl || settings.baseUrl || "").trim();
+  }
+
   function buildApiUrl(s) {
     const full = ensureHttp(s.apiUrl || "");
     if (full) return full;
@@ -636,6 +649,13 @@
     setStatus("已恢复原文");
   }
 
+  function getProviderLabel(value) {
+    if (value === "openai") return "OpenAI";
+    if (value === "deepseek") return "DeepSeek";
+    if (value === "custom") return "自定义接口";
+    return value || "";
+  }
+
   function buildModelOptions(prov, sel, inp, cur) {
     const list = MODEL_PRESETS[prov] || ["custom"];
     sel.innerHTML = list.map((m) => `<option value="${esc(m)}">${esc(m)}</option>`).join("");
@@ -663,25 +683,21 @@
       </div>
       <div style="display:grid;gap:10px;">
         <div>
-          <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">Provider</label>
+          <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">翻译服务</label>
           <select id="iml-provider" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;">
-            <option value="openai">openai</option><option value="deepseek">deepseek</option><option value="custom">custom</option>
+            <option value="openai">OpenAI</option><option value="deepseek">DeepSeek</option><option value="custom">自定义接口</option>
           </select>
         </div>
         <div>
-          <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">API 完整地址（优先）</label>
-          <input id="iml-apiurl" placeholder="https://xxx/v1/chat/completions" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;box-sizing:border-box" />
+          <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">接口地址</label>
+          <input id="iml-apiinput" placeholder="支持完整地址，或只填基础域名" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;box-sizing:border-box" />
         </div>
         <div>
-          <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">Base URL（自动拼接）</label>
-          <input id="iml-base" placeholder="https://api.openai.com" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;box-sizing:border-box" />
-        </div>
-        <div>
-          <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">API Key</label>
+          <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">API 密钥</label>
           <input id="iml-key" type="password" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;box-sizing:border-box" />
         </div>
         <div>
-          <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">Model</label>
+          <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">模型</label>
           <select id="iml-model-select" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;"></select>
           <input id="iml-model-custom" placeholder="自定义模型名" style="display:none;width:100%;margin-top:6px;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;box-sizing:border-box" />
         </div>
@@ -721,19 +737,21 @@
     document.documentElement.appendChild(root);
 
     const $ = (id) => panel.querySelector("#" + id);
-    const provider=$("iml-provider"), apiurl=$("iml-apiurl"), base=$("iml-base"), key=$("iml-key");
+    const provider=$("iml-provider"), apiinput=$("iml-apiinput"), key=$("iml-key");
     const modelSelect=$("iml-model-select"), modelCustom=$("iml-model-custom");
     const lang=$("iml-lang"), display=$("iml-display"), speed=$("iml-speed");
     const status=$("iml-status");
 
     state.statusEl = status; state.panel = root;
-    provider.value=s.provider||"openai"; apiurl.value=s.apiUrl||""; base.value=s.baseUrl||"";
+    provider.value=s.provider||"openai"; apiinput.value=getApiInputValue(s);
     key.value=s.apiKey||""; lang.value=s.targetLang||"zh-CN"; display.value=s.displayMode||"bilingual"; speed.value=s.speedMode||"fast";
     buildModelOptions(provider.value, modelSelect, modelCustom, s.model||"");
 
     provider.addEventListener("change", () => {
-      if (provider.value === "openai" && !base.value) base.value = "https://api.openai.com";
-      if (provider.value === "deepseek" && !base.value) base.value = "https://api.deepseek.com";
+      if (!apiinput.value.trim()) {
+        if (provider.value === "openai") apiinput.value = "https://api.openai.com";
+        if (provider.value === "deepseek") apiinput.value = "https://api.deepseek.com";
+      }
       buildModelOptions(provider.value, modelSelect, modelCustom, "");
     });
     modelSelect.addEventListener("change", () => { modelCustom.style.display = modelSelect.value === "custom" ? "block" : "none"; });
@@ -745,11 +763,12 @@
     $("iml-save").addEventListener("click", async () => {
       const model = modelSelect.value === "custom" ? modelCustom.value.trim() : modelSelect.value;
       if (!model) { setStatus("模型不能为空", true); return; }
+      const apiParsed = normalizeApiInput(apiinput.value.trim());
       state.settings = norm({
         ...state.settings,
         provider: provider.value,
-        apiUrl: apiurl.value.trim(),
-        baseUrl: base.value.trim(),
+        apiUrl: apiParsed.apiUrl,
+        baseUrl: apiParsed.baseUrl,
         apiKey: key.value.trim(),
         model,
         targetLang: lang.value.trim() || "zh-CN",
