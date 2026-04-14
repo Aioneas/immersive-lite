@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Immersive Lite (Core)
 // @namespace    https://github.com/Aioneas/immersive-lite
-// @version      0.8.0
+// @version      0.8.1
 // @description  Core-only bilingual page translation with custom OpenAI-compatible API (no login/cloud/pricing).
 // @author       Aioneas
 // @match        *://*/*
@@ -58,6 +58,7 @@
     settings: { ...DEFAULT },
     originalHTML: new WeakMap(),
     fab: null,
+    fabText: null,
     fabDot: null,
     panel: null,
     statusEl: null,
@@ -143,7 +144,7 @@
   function setFabState(mode) {
     if (!state.fab) return;
     const current = mode || "idle";
-    state.fab.textContent = current === "front" ? "…" : "译";
+    if (state.fabText) state.fabText.textContent = current === "front" ? "…" : "译";
     state.fab.style.opacity = current === "front" ? ".65" : "1";
     if (state.fabDot) {
       state.fabDot.style.display = current === "background" ? "block" : "none";
@@ -666,8 +667,12 @@
 
     const fab = document.createElement("button");
     fab.id = "iml-fab-main";
-    fab.textContent = "译";
     fab.style.cssText = "position:relative;width:50px;height:50px;border:none;border-radius:25px;background:linear-gradient(135deg,#1677ff 0%,#4b9eff 100%);color:#fff;font-size:20px;font-weight:700;box-shadow:0 10px 24px rgba(22,119,255,.35),0 4px 10px rgba(0,0,0,.18);";
+
+    const fabText = document.createElement("span");
+    fabText.textContent = "译";
+    fabText.style.cssText = "position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);line-height:1;";
+    fab.appendChild(fabText);
 
     const fabDot = document.createElement("span");
     fabDot.style.cssText = "display:none;position:absolute;top:8px;right:8px;width:8px;height:8px;border-radius:50%;background:#ffd54f;box-shadow:0 0 0 2px rgba(255,255,255,.9);";
@@ -683,6 +688,7 @@
     root.appendChild(fab);
     document.documentElement.appendChild(root);
     state.fab = fab;
+    state.fabText = fabText;
     state.fabDot = fabDot;
     setFabState("idle");
   }
