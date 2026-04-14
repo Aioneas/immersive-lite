@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Immersive Lite (Core)
 // @namespace    https://github.com/Aioneas/immersive-lite
-// @version      0.8.3
+// @version      0.8.4
 // @description  Core-only bilingual page translation with custom OpenAI-compatible API (no login/cloud/pricing).
 // @author       Aioneas
 // @match        *://*/*
@@ -65,6 +65,7 @@
     batchQueue: null,
     cache: {},
     fabPos: null,
+    fabDockTimer: 0,
   };
 
   function esc(s) {
@@ -248,6 +249,18 @@
     if (!state.fab || !state.fabPos) return;
     applyFabPosition(state.fabPos, { reveal: false });
     state.fab.style.opacity = state.translating ? ".26" : ".66";
+  }
+
+  function scheduleFabDock(delay) {
+    if (!state.fab) return;
+    if (state.fabDockTimer) {
+      clearTimeout(state.fabDockTimer);
+      state.fabDockTimer = 0;
+    }
+    state.fabDockTimer = setTimeout(() => {
+      state.fabDockTimer = 0;
+      dockFab();
+    }, delay || 1200);
   }
 
   function setFabDraggingVisual(active) {
@@ -775,6 +788,10 @@
 
     const onPointerDown = (e) => {
       if (e.button != null && e.button !== 0) return;
+      if (state.fabDockTimer) {
+        clearTimeout(state.fabDockTimer);
+        state.fabDockTimer = 0;
+      }
       pointerId = e.pointerId;
       dragging = true;
       moved = false;
@@ -832,13 +849,6 @@
     fab.addEventListener("pointerup", onPointerUp);
     fab.addEventListener("pointercancel", onPointerUp);
 
-    fab.addEventListener("pointerenter", () => {
-      if (!dragging) revealFab();
-    });
-    fab.addEventListener("pointerleave", () => {
-      if (!dragging) dockFab();
-    });
-
     fab.addEventListener("click", (e) => {
       if (dragging || moved || Date.now() < suppressClickUntil) {
         e.preventDefault();
@@ -846,6 +856,8 @@
         return;
       }
       e.stopPropagation();
+      revealFab();
+      scheduleFabDock(1800);
       if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; openSettings(); return; }
       clickTimer = setTimeout(async () => { clickTimer = null; await translatePage(); }, 280);
     });
