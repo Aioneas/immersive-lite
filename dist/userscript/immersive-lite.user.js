@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Immersive Lite (Core)
 // @namespace    https://github.com/Aioneas/immersive-lite
-// @version      0.4.0
+// @version      0.5.0
 // @description  Core-only bilingual page translation with custom OpenAI-compatible API (no login/cloud/pricing).
 // @author       Aioneas
 // @match        *://*/*
@@ -53,10 +53,9 @@
     model: "gpt-5.4",
     targetLang: "zh-CN",
     displayMode: "bilingual", // bilingual | translated
-    customHeadersText: "",
-    batchSize: 40,
-    maxRetries: 1,
-    concurrency: 8,
+    batchSize: 120,
+    maxRetries: 2,
+    concurrency: 24,
   };
 
   const state = {
@@ -69,6 +68,25 @@
     statusEl: null,
     runId: 0,
     lastStatusAt: 0,
+    liveTimer: 0,
+    finishTimer: 0,
+    liveBound: false,
+    liveObserver: null,
+    lastScrollY: 0,
+    scrollDir: 1,
+    pending: [],
+    pendingSet: new Set(),
+    activeWorkers: 0,
+    workerTarget: 0,
+    doneCount: 0,
+    totalCount: 0,
+    failedBatches: 0,
+    lastActivityAt: 0,
+    kickWorkers: null,
+    nodeKeyMap: new WeakMap(),
+    nodeSeq: 0,
+    onScroll: null,
+    onResize: null,
   };
 
   function esc(s) {
@@ -109,16 +127,6 @@
     return /^https?:\/\//i.test(s) ? s : `https://${s}`;
   }
 
-  function parseHeadersFromText(text) {
-    if (!text || !String(text).trim()) return {};
-    try {
-      const obj = JSON.parse(text);
-      return obj && typeof obj === "object" && !Array.isArray(obj) ? obj : {};
-    } catch {
-      return null;
-    }
-  }
-
   function normalizeByPreset(input) {
     const t = { ...input };
 
@@ -130,9 +138,9 @@
       if (!t.model) t.model = "gpt-5.4";
     }
 
-    t.batchSize = Math.min(120, Math.max(1, Number(t.batchSize || 40)));
-    t.maxRetries = Math.min(3, Math.max(0, Number(t.maxRetries || 1)));
-    t.concurrency = Math.min(12, Math.max(1, Number(t.concurrency || 8)));
+    t.batchSize = Math.min(200, Math.max(1, Number(t.batchSize || 120)));
+    t.maxRetries = Math.min(4, Math.max(0, Number(t.maxRetries || 2)));
+    t.concurrency = Math.min(32, Math.max(1, Number(t.concurrency || 24)));
     t.displayMode = t.displayMode === "translated" ? "translated" : "bilingual";
     return t;
   }
@@ -285,10 +293,6 @@
       headers["X-Title"] = "Immersive Lite";
     }
 
-    const parsedHeaders = parseHeadersFromText(s.customHeadersText || "");
-    if (parsedHeaders === null) throw new Error("自定义请求头 JSON 格式错误");
-    Object.assign(headers, parsedHeaders);
-
     const payload = {
       model: s.model,
       temperature: 0,
@@ -329,7 +333,7 @@
 
       lastErr = new Error(`HTTP ${res.status} ${String(res.text || "").slice(0, 160)}`);
       if (attempt < s.maxRetries && shouldRetry(res.status)) {
-        await sleep(380 * (attempt + 1));
+        await sleep(260 * (attempt + 1));
         continue;
       }
       throw lastErr;
@@ -347,6 +351,175 @@
     node.setAttribute("data-iml-translated", "1");
   }
 
+  function makeNodeKey(node) {
+    if (!node || !node.isConnected) return "";
+    let key = state.nodeKeyMap.get(node);
+    if (!key) {
+      state.nodeSeq += 1;
+      key = `${node.tagName}-${state.nodeSeq}`;
+      state.nodeKeyMap.set(node, key);
+    }
+    return key;
+  }
+
+  function queueNode(node, toFront = false) {
+    const key = makeNodeKey(node);
+    if (!key) return false;
+    if (state.pendingSet.has(key)) return false;
+    if (node.getAttribute("data-iml-translated") === "1") return false;
+    state.pendingSet.add(key);
+    if (toFront) state.pending.unshift({ key, node });
+    else state.pending.push({ key, node });
+    return true;
+  }
+
+  function drainCandidateNodes(prioritizeViewport = false) {
+    if (prioritizeViewport) {
+      return queueViewportFirst();
+    }
+
+    const nodes = pickNodes();
+    if (!nodes.length) return 0;
+
+    let added = 0;
+    for (const n of nodes) if (queueNode(n, false)) added += 1;
+    state.totalCount += added;
+    return added;
+  }
+
+  function popQueueBatch(batchSize) {
+    const picked = [];
+    while (picked.length < batchSize && state.pending.length > 0) {
+      const item = state.pending.shift();
+      if (!item || !item.node || !item.node.isConnected) continue;
+      const txt = (item.node.innerText || "").trim();
+      if (!txt) continue;
+      if (item.node.getAttribute("data-iml-translated") === "1") continue;
+      state.pendingSet.delete(item.key);
+      picked.push({ node: item.node, text: txt });
+    }
+    return picked;
+  }
+
+  function refreshScrollDirection() {
+    const y = window.scrollY || window.pageYOffset || 0;
+    const delta = y - state.lastScrollY;
+    if (Math.abs(delta) > 2) state.scrollDir = delta > 0 ? 1 : -1;
+    state.lastScrollY = y;
+  }
+
+  function queueViewportFirst() {
+    const nodes = pickNodes();
+    if (!nodes.length) return 0;
+    const h = window.innerHeight || document.documentElement.clientHeight || 800;
+    const leadTop = state.scrollDir >= 0 ? -Math.round(h * 0.1) : -Math.round(h * 0.7);
+    const leadBottom = state.scrollDir >= 0 ? Math.round(h * 1.35) : Math.round(h * 1.05);
+
+    const lead = [];
+    const rest = [];
+    for (const n of nodes) {
+      const r = n.getBoundingClientRect();
+      if (r.bottom > leadTop && r.top < leadBottom) lead.push(n);
+      else rest.push(n);
+    }
+
+    lead.sort((a, b) => {
+      const ra = a.getBoundingClientRect();
+      const rb = b.getBoundingClientRect();
+      return state.scrollDir >= 0 ? ra.top - rb.top : rb.top - ra.top;
+    });
+
+    let added = 0;
+    for (const n of lead) if (queueNode(n, true)) added += 1;
+    for (const n of rest) if (queueNode(n, false)) added += 1;
+    state.totalCount += added;
+    return added;
+  }
+
+  function updateLiveStatus() {
+    if (!shouldStatusUpdate()) return;
+    const done = state.doneCount;
+    const total = Math.max(state.totalCount, done);
+    if (state.activeWorkers > 0 || state.pending.length > 0) {
+      setStatus(`流式翻译中 ${done}/${total}`);
+    } else if (state.failedBatches > 0) {
+      setStatus(`已完成 ${done}/${total}，${state.failedBatches} 批失败`, true);
+    } else {
+      setStatus("");
+    }
+  }
+
+  function bindLiveFeed(runId) {
+    if (state.liveBound) return;
+    state.liveBound = true;
+
+    state.onScroll = () => {
+      if (!state.translating || runId !== state.runId) return;
+      refreshScrollDirection();
+      const added = queueViewportFirst();
+      if (added > 0) {
+        state.lastActivityAt = Date.now();
+        if (typeof state.kickWorkers === "function") state.kickWorkers();
+      }
+      updateLiveStatus();
+      if (state.liveTimer) return;
+      state.liveTimer = setTimeout(() => {
+        state.liveTimer = 0;
+        if (!state.translating || runId !== state.runId) return;
+        const n = queueViewportFirst();
+        if (n > 0) {
+          state.lastActivityAt = Date.now();
+          if (typeof state.kickWorkers === "function") state.kickWorkers();
+        }
+      }, 120);
+    };
+
+    state.onResize = () => {
+      if (!state.translating || runId !== state.runId) return;
+      const n = queueViewportFirst();
+      if (n > 0) {
+        state.lastActivityAt = Date.now();
+        if (typeof state.kickWorkers === "function") state.kickWorkers();
+      }
+    };
+
+    window.addEventListener("scroll", state.onScroll, { passive: true });
+    window.addEventListener("resize", state.onResize);
+
+    if (typeof MutationObserver !== "undefined") {
+      state.liveObserver = new MutationObserver(() => {
+        if (!state.translating || runId !== state.runId) return;
+        const n = queueViewportFirst();
+        if (n > 0) {
+          state.lastActivityAt = Date.now();
+          if (typeof state.kickWorkers === "function") state.kickWorkers();
+        }
+      });
+      state.liveObserver.observe(document.body, { childList: true, subtree: true });
+    }
+  }
+
+  function unbindLiveFeed() {
+    if (!state.liveBound) return;
+    state.liveBound = false;
+    if (state.onScroll) window.removeEventListener("scroll", state.onScroll);
+    if (state.onResize) window.removeEventListener("resize", state.onResize);
+    state.onScroll = null;
+    state.onResize = null;
+    if (state.liveObserver) {
+      state.liveObserver.disconnect();
+      state.liveObserver = null;
+    }
+    if (state.liveTimer) {
+      clearTimeout(state.liveTimer);
+      state.liveTimer = 0;
+    }
+    if (state.finishTimer) {
+      clearTimeout(state.finishTimer);
+      state.finishTimer = 0;
+    }
+  }
+
   async function translatePage() {
     if (state.translating || state.translated) return;
     state.translating = true;
@@ -356,96 +529,142 @@
     setFabBusy(true);
     setStatus("翻译中...");
 
-    try {
-      const nodes = pickNodes();
-      if (!nodes.length) {
-        setStatus("没找到可翻译文本", true);
+    state.pending = [];
+    state.pendingSet = new Set();
+    state.nodeKeyMap = new WeakMap();
+    state.nodeSeq = 0;
+    state.activeWorkers = 0;
+    state.workerTarget = 0;
+    state.doneCount = 0;
+    state.totalCount = 0;
+    state.failedBatches = 0;
+    state.lastActivityAt = Date.now();
+    state.kickWorkers = null;
+    state.lastScrollY = window.scrollY || window.pageYOffset || 0;
+    state.scrollDir = 1;
+
+    const batchSize = Math.max(1, Number(state.settings.batchSize || 120));
+    const maxConcurrency = Math.max(1, Number(state.settings.concurrency || 24));
+
+    function ensureWorkers() {
+      while (state.activeWorkers < state.workerTarget && state.translating && runId === state.runId) {
+        worker();
+      }
+    }
+
+    state.kickWorkers = ensureWorkers;
+
+    function finalizeIfIdle() {
+      if (!state.translating || runId !== state.runId) return;
+      const idleFor = Date.now() - state.lastActivityAt;
+      const noWork = state.pending.length === 0 && state.activeWorkers === 0;
+
+      if (!noWork || idleFor < 850) {
+        if (state.finishTimer) clearTimeout(state.finishTimer);
+        state.finishTimer = setTimeout(finalizeIfIdle, 220);
         return;
       }
 
-      const batchSize = Math.max(1, Number(state.settings.batchSize || 40));
-      const maxConcurrencySetting = Math.max(1, Number(state.settings.concurrency || 8));
-      const { viewport, nonViewport } = splitByViewport(nodes);
+      state.translated = state.doneCount > 0;
+      state.translating = false;
+      state.workerTarget = 0;
+      state.kickWorkers = null;
+      setFabBusy(false);
+      updateLiveStatus();
+      if (state.finishTimer) {
+        clearTimeout(state.finishTimer);
+        state.finishTimer = 0;
+      }
+      unbindLiveFeed();
+    }
 
-      const urgentGroups = buildGroups(viewport, batchSize);
-      const backgroundGroups = buildGroups(nonViewport, batchSize);
-
-      const total = nodes.length;
-      let done = 0;
-      let failedBatches = 0;
-
-      const updateProgress = (phase) => {
-        if (!shouldStatusUpdate()) return;
-        if (phase === "viewport") {
-          setStatus(`可见区域优先翻译中 ${done}/${total}`);
-        } else {
-          setStatus(`后台补全中 ${done}/${total}`);
-        }
-      };
-
-      async function runQueue(groups, phase) {
-        if (!groups.length) return;
-        const cursor = { i: 0 };
-        const workerCount = Math.min(maxConcurrencySetting, groups.length);
-
-        async function worker() {
-          while (true) {
-            if (!state.translating || runId !== state.runId) return;
-            const idx = cursor.i++;
-            if (idx >= groups.length) return;
-
-            const g = groups[idx];
-            try {
-              const translated = await translateBatch(g.subTexts);
-              if (!state.translating || runId !== state.runId) return;
-              for (let j = 0; j < g.subNodes.length; j++) {
-                const node = g.subNodes[j];
-                if (!node || !node.isConnected) continue;
-                applyTranslation(node, g.subTexts[j] || "", translated[j] || "");
-                done += 1;
-              }
-              updateProgress(phase);
-            } catch (e) {
-              failedBatches += 1;
-              console.error("[immersive-lite] batch failed", e);
+    async function worker() {
+      state.activeWorkers += 1;
+      try {
+        while (state.translating && runId === state.runId) {
+          if (state.pending.length === 0) {
+            const added = queueViewportFirst();
+            if (added > 0) state.lastActivityAt = Date.now();
+            if (added === 0) {
+              await sleep(60);
+              if (state.pending.length === 0) break;
             }
           }
+
+          const batchItems = popQueueBatch(batchSize);
+          if (!batchItems.length) {
+            await sleep(30);
+            continue;
+          }
+
+          try {
+            const translated = await translateBatch(batchItems.map((i) => i.text));
+            if (!state.translating || runId !== state.runId) return;
+            for (let i = 0; i < batchItems.length; i++) {
+              const it = batchItems[i];
+              if (!it.node || !it.node.isConnected) continue;
+              applyTranslation(it.node, it.text || "", translated[i] || "");
+              state.doneCount += 1;
+            }
+            state.lastActivityAt = Date.now();
+            updateLiveStatus();
+          } catch (e) {
+            state.failedBatches += 1;
+            state.lastActivityAt = Date.now();
+            console.error("[immersive-lite] batch failed", e);
+            updateLiveStatus();
+          }
+
+          await new Promise((resolve) => requestAnimationFrame(() => resolve()));
         }
+      } finally {
+        state.activeWorkers -= 1;
+        ensureWorkers();
+        finalizeIfIdle();
+      }
+    }
 
-        await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    try {
+      const added = drainCandidateNodes(true);
+      if (!added) {
+        setStatus("没找到可翻译文本", true);
+        state.translating = false;
+        setFabBusy(false);
+        return;
       }
 
-      await runQueue(urgentGroups, "viewport");
-      if (!state.translating || runId !== state.runId) return;
+      bindLiveFeed(runId);
+      updateLiveStatus();
 
-      if (backgroundGroups.length > 0) {
-        if (viewport.length > 0) setStatus("可见区域已完成，后台继续补全...");
-        await new Promise((resolve) => requestAnimationFrame(() => resolve()));
-        await runQueue(backgroundGroups, "background");
-      }
-
-      if (!state.translating || runId !== state.runId) return;
-
-      state.translated = done > 0;
-      if (failedBatches > 0) {
-        setStatus(`已完成 ${done}/${total}，${failedBatches} 批失败`, true);
-      } else {
-        setStatus(state.translated ? "" : "无可翻译内容");
-      }
+      state.workerTarget = Math.min(maxConcurrency, Math.max(4, Math.ceil(maxConcurrency * 0.75)));
+      ensureWorkers();
+      finalizeIfIdle();
     } catch (e) {
       setStatus("翻译失败: " + (e?.message || e), true);
       console.error("[immersive-lite] translate failed", e);
-    } finally {
-      if (runId === state.runId) {
-        state.translating = false;
-        setFabBusy(false);
-      }
+      state.translating = false;
+      state.workerTarget = 0;
+      state.kickWorkers = null;
+      setFabBusy(false);
+      unbindLiveFeed();
     }
   }
 
   function restorePage() {
     state.runId += 1;
     state.translating = false;
+    unbindLiveFeed();
+    state.pending = [];
+    state.pendingSet = new Set();
+    state.nodeKeyMap = new WeakMap();
+    state.nodeSeq = 0;
+    state.activeWorkers = 0;
+    state.workerTarget = 0;
+    state.doneCount = 0;
+    state.totalCount = 0;
+    state.failedBatches = 0;
+    state.kickWorkers = null;
+
     const nodes = Array.from(document.querySelectorAll("[data-iml-translated='1']"));
     for (const n of nodes) {
       const html = state.originalHTML.get(n);
@@ -482,69 +701,87 @@
     const s = state.settings;
     const root = document.createElement("div");
     root.id = "iml-settings-overlay";
-    root.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.42);z-index:2147483647;";
+    root.style.cssText = "position:fixed;inset:0;background:rgba(8,15,29,.46);backdrop-filter:blur(2px);z-index:2147483647;";
 
     const panel = document.createElement("div");
-    panel.style.cssText = "position:absolute;left:0;right:0;bottom:0;background:#fff;border-radius:16px 16px 0 0;padding:14px 14px 24px;max-height:86vh;overflow:auto;font:14px -apple-system;";
+    panel.style.cssText = "position:absolute;left:0;right:0;bottom:0;background:linear-gradient(180deg,#ffffff 0%,#f8fbff 100%);border-radius:18px 18px 0 0;padding:14px 14px 26px;max-height:88vh;overflow:auto;font:14px -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif;box-shadow:0 -12px 30px rgba(0,0,0,.16);";
     panel.innerHTML = `
-      <div style="display:flex;justify-content:flex-start;align-items:center;margin-bottom:8px">
-        <b>Immersive Lite 设置</b>
-      </div>
-
-      <label>Provider</label>
-      <select id="iml-provider" style="width:100%;margin:4px 0 8px;padding:8px">
-        <option value="openai">openai</option>
-        <option value="deepseek">deepseek</option>
-        <option value="custom">custom</option>
-      </select>
-
-      <label>API 完整地址（优先）</label>
-      <input id="iml-apiurl" placeholder="https://xxx/v1/chat/completions" style="width:100%;margin:4px 0 8px;padding:8px;box-sizing:border-box" />
-
-      <label>Base URL（自动拼接）</label>
-      <input id="iml-base" placeholder="https://api.openai.com" style="width:100%;margin:4px 0 8px;padding:8px;box-sizing:border-box" />
-
-      <label>API Key</label>
-      <input id="iml-key" type="password" style="width:100%;margin:4px 0 8px;padding:8px;box-sizing:border-box" />
-
-      <label>Model</label>
-      <select id="iml-model-select" style="width:100%;margin:4px 0 8px;padding:8px"></select>
-      <input id="iml-model-custom" placeholder="自定义模型名" style="display:none;width:100%;margin:-2px 0 8px;padding:8px;box-sizing:border-box" />
-
-      <label>目标语言 (如 zh-CN / en / ja)</label>
-      <input id="iml-lang" style="width:100%;margin:4px 0 8px;padding:8px;box-sizing:border-box" />
-
-      <label>显示模式</label>
-      <select id="iml-display" style="width:100%;margin:4px 0 8px;padding:8px">
-        <option value="bilingual">双语对照</option>
-        <option value="translated">仅译文</option>
-      </select>
-
-      <div style="display:flex;gap:8px;">
-        <div style="flex:1;">
-          <label>批次默认</label>
-          <input id="iml-batch" type="number" min="1" max="120" style="width:100%;margin:4px 0 8px;padding:8px;box-sizing:border-box" />
-        </div>
-        <div style="flex:1;">
-          <label>并发</label>
-          <input id="iml-concurrency" type="number" min="1" max="12" style="width:100%;margin:4px 0 8px;padding:8px;box-sizing:border-box" />
+      <div style="display:flex;justify-content:flex-start;align-items:center;margin-bottom:10px;">
+        <div>
+          <div style="font-size:16px;font-weight:700;color:#10213a;">Immersive Lite</div>
+          <div style="font-size:12px;color:#6f7f97;margin-top:2px;">轻量流式网页翻译</div>
         </div>
       </div>
 
-      <label>重试次数</label>
-      <input id="iml-retries" type="number" min="0" max="3" style="width:100%;margin:4px 0 8px;padding:8px;box-sizing:border-box" />
+      <div style="display:grid;gap:10px;">
+        <div>
+          <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">Provider</label>
+          <select id="iml-provider" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;">
+            <option value="openai">openai</option>
+            <option value="deepseek">deepseek</option>
+            <option value="custom">custom</option>
+          </select>
+        </div>
 
-      <label>自定义请求头 JSON（可选）</label>
-      <textarea id="iml-headers" rows="3" placeholder='{"X-Title":"My App"}' style="width:100%;margin:4px 0 12px;padding:8px;box-sizing:border-box"></textarea>
+        <div>
+          <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">API 完整地址（优先）</label>
+          <input id="iml-apiurl" placeholder="https://xxx/v1/chat/completions" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;box-sizing:border-box" />
+        </div>
 
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-        <button id="iml-save" style="padding:10px;border:none;border-radius:10px;background:#1677ff;color:#fff">保存</button>
-        <button id="iml-restore" style="padding:10px;border:none;border-radius:10px;background:#f3f3f3">恢复原文</button>
-        <button id="iml-retranslate" style="padding:10px;border:none;border-radius:10px;background:#f3f3f3">重新翻译</button>
-        <button id="iml-close2" style="padding:10px;border:none;border-radius:10px;background:#f3f3f3">关闭</button>
+        <div>
+          <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">Base URL（自动拼接）</label>
+          <input id="iml-base" placeholder="https://api.openai.com" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;box-sizing:border-box" />
+        </div>
+
+        <div>
+          <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">API Key</label>
+          <input id="iml-key" type="password" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;box-sizing:border-box" />
+        </div>
+
+        <div>
+          <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">Model</label>
+          <select id="iml-model-select" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;"></select>
+          <input id="iml-model-custom" placeholder="自定义模型名" style="display:none;width:100%;margin-top:6px;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;box-sizing:border-box" />
+        </div>
+
+        <div style="display:flex;gap:8px;">
+          <div style="flex:1;">
+            <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">目标语言</label>
+            <input id="iml-lang" placeholder="zh-CN / en / ja" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;box-sizing:border-box" />
+          </div>
+          <div style="flex:1;">
+            <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">显示模式</label>
+            <select id="iml-display" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;">
+              <option value="bilingual">双语对照</option>
+              <option value="translated">仅译文</option>
+            </select>
+          </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
+          <div>
+            <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">批次默认</label>
+            <input id="iml-batch" type="number" min="1" max="200" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;box-sizing:border-box" />
+          </div>
+          <div>
+            <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">并发</label>
+            <input id="iml-concurrency" type="number" min="1" max="32" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;box-sizing:border-box" />
+          </div>
+          <div>
+            <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">重试次数</label>
+            <input id="iml-retries" type="number" min="0" max="4" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;box-sizing:border-box" />
+          </div>
+        </div>
       </div>
 
-      <div id="iml-status" style="color:#666;font-size:12px;margin-top:10px;line-height:1.4;"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px;">
+        <button id="iml-save" style="padding:11px;border:none;border-radius:11px;background:linear-gradient(135deg,#1677ff,#4f9bff);color:#fff;font-weight:600;">保存</button>
+        <button id="iml-retranslate" style="padding:11px;border:none;border-radius:11px;background:#eef3fb;color:#334b73;">重新翻译</button>
+        <button id="iml-restore" style="padding:11px;border:none;border-radius:11px;background:#eef3fb;color:#334b73;">恢复原文</button>
+        <button id="iml-close2" style="padding:11px;border:none;border-radius:11px;background:#eef3fb;color:#334b73;">关闭</button>
+      </div>
+
+      <div id="iml-status" style="color:#6f7f97;font-size:12px;margin-top:10px;line-height:1.5;"></div>
     `;
 
     root.appendChild(panel);
@@ -561,7 +798,6 @@
     const batch = panel.querySelector("#iml-batch");
     const concurrency = panel.querySelector("#iml-concurrency");
     const retries = panel.querySelector("#iml-retries");
-    const headers = panel.querySelector("#iml-headers");
     const status = panel.querySelector("#iml-status");
 
     state.statusEl = status;
@@ -573,10 +809,9 @@
     key.value = s.apiKey || "";
     lang.value = s.targetLang || "zh-CN";
     display.value = s.displayMode || "bilingual";
-    batch.value = String(s.batchSize || 40);
-    concurrency.value = String(s.concurrency || 8);
-    retries.value = String(s.maxRetries || 1);
-    headers.value = s.customHeadersText || "";
+    batch.value = String(s.batchSize || 120);
+    concurrency.value = String(s.concurrency || 24);
+    retries.value = String(s.maxRetries || 2);
     buildModelOptions(provider.value, modelSelect, modelCustom, s.model || "");
 
     provider.addEventListener("change", () => {
@@ -600,12 +835,6 @@
     });
 
     panel.querySelector("#iml-save").addEventListener("click", async () => {
-      const testHeaders = parseHeadersFromText(headers.value.trim());
-      if (testHeaders === null) {
-        setStatus("自定义请求头 JSON 格式错误", true);
-        return;
-      }
-
       const model = modelSelect.value === "custom" ? modelCustom.value.trim() : modelSelect.value;
       if (!model) {
         setStatus("模型不能为空", true);
@@ -621,10 +850,9 @@
         model,
         targetLang: lang.value.trim() || "zh-CN",
         displayMode: display.value,
-        batchSize: Number(batch.value || 40),
-        concurrency: Number(concurrency.value || 8),
-        maxRetries: Number(retries.value || 1),
-        customHeadersText: headers.value.trim(),
+        batchSize: Number(batch.value || 120),
+        concurrency: Number(concurrency.value || 24),
+        maxRetries: Number(retries.value || 2),
       });
 
       await setValue(KEY, state.settings);
@@ -652,7 +880,7 @@
     const fab = document.createElement("button");
     fab.id = "iml-fab-main";
     fab.textContent = "译";
-    fab.style.cssText = "width:46px;height:46px;border:none;border-radius:23px;background:#1677ff;color:#fff;font-size:20px;box-shadow:0 4px 16px rgba(0,0,0,.24);";
+    fab.style.cssText = "width:50px;height:50px;border:none;border-radius:25px;background:linear-gradient(135deg,#1677ff 0%,#4b9eff 100%);color:#fff;font-size:20px;font-weight:700;box-shadow:0 10px 24px rgba(22,119,255,.35),0 4px 10px rgba(0,0,0,.18);backdrop-filter:blur(4px);";
 
     fab.addEventListener("click", async (e) => {
       e.stopPropagation();
