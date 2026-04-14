@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Immersive Lite (Core)
 // @namespace    https://github.com/Aioneas/immersive-lite
-// @version      0.7.8
+// @version      0.8.1
 // @description  Core-only bilingual page translation with custom OpenAI-compatible API (no login/cloud/pricing).
 // @author       Aioneas
 // @match        *://*/*
@@ -167,6 +167,17 @@
     state.fab.style.opacity = busy ? ".34" : ".78";
   }
 
+  function getFabEdgeState(pos) {
+    const p = clampFabPosition(Number(pos.left || 0), Number(pos.top || 0));
+    const size = 42;
+    const vw = window.innerWidth || document.documentElement.clientWidth || 390;
+    const leftGap = p.left;
+    const rightGap = vw - p.left - size;
+    if (leftGap <= 8) return "left";
+    if (rightGap <= 8) return "right";
+    return "free";
+  }
+
   function clampFabPosition(left, top) {
     const size = 42;
     const vw = window.innerWidth || document.documentElement.clientWidth || 390;
@@ -181,13 +192,20 @@
     };
   }
 
-  function applyFabPosition(pos) {
+  function applyFabPosition(pos, options) {
     if (!state.fab || !pos) return;
+    const opts = options || {};
     const p = clampFabPosition(Number(pos.left || 0), Number(pos.top || 0));
-    state.fab.style.left = p.left + "px";
+    const edge = getFabEdgeState(p);
+    let left = p.left;
+    if (!opts.reveal && edge === "left") left = -18;
+    if (!opts.reveal && edge === "right") left = (window.innerWidth || document.documentElement.clientWidth || 390) - 24;
+
+    state.fab.style.left = left + "px";
     state.fab.style.top = p.top + "px";
     state.fab.style.right = "auto";
     state.fab.style.bottom = "auto";
+    state.fab.dataset.edgeState = edge;
   }
 
   async function saveFabPosition(pos) {
@@ -200,8 +218,20 @@
     const next = clampFabPosition(state.fabPos.left, state.fabPos.top);
     const changed = next.left !== state.fabPos.left || next.top !== state.fabPos.top;
     state.fabPos = next;
-    applyFabPosition(next);
+    dockFab();
     if (changed) gmSet(FAB_POS_KEY, next);
+  }
+
+  function revealFab() {
+    if (!state.fab || !state.fabPos) return;
+    applyFabPosition(state.fabPos, { reveal: true });
+    state.fab.style.opacity = state.translating ? ".42" : ".94";
+  }
+
+  function dockFab() {
+    if (!state.fab || !state.fabPos) return;
+    applyFabPosition(state.fabPos, { reveal: false });
+    state.fab.style.opacity = state.translating ? ".26" : ".66";
   }
 
   function hashText(str) {
@@ -701,7 +731,7 @@
     const fab = document.createElement("button");
     fab.id = "iml-fab-main";
     fab.textContent = "译";
-    fab.style.cssText = "position:fixed;width:42px;height:42px;border:none;border-radius:21px;background:rgba(88,96,110,.64);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);color:#fff;font-size:17px;font-weight:700;box-shadow:0 4px 12px rgba(0,0,0,.10),0 1px 4px rgba(0,0,0,.08);touch-action:none;user-select:none;-webkit-user-select:none;pointer-events:auto;transition:opacity .18s ease, transform .18s ease, background-color .18s ease;";
+    fab.style.cssText = "position:fixed;width:42px;height:42px;border:none;border-radius:21px;background:rgba(88,96,110,.64);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);color:#fff;font-size:17px;font-weight:700;box-shadow:0 4px 12px rgba(0,0,0,.10),0 1px 4px rgba(0,0,0,.08);touch-action:none;user-select:none;-webkit-user-select:none;pointer-events:auto;transition:opacity .18s ease, transform .18s ease, background-color .18s ease, left .18s ease;";
 
     let clickTimer = null;
     let suppressClickUntil = 0;
@@ -722,6 +752,7 @@
       moved = false;
       startX = e.clientX;
       startY = e.clientY;
+      revealFab();
       const rect = fab.getBoundingClientRect();
       originLeft = rect.left;
       originTop = rect.top;
@@ -756,6 +787,7 @@
         await saveFabPosition({ left: rect.left, top: rect.top });
         if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
         suppressClickUntil = Date.now() + 350;
+        dockFab();
         e.preventDefault();
       }
     };
@@ -764,6 +796,13 @@
     fab.addEventListener("pointermove", onPointerMove);
     fab.addEventListener("pointerup", onPointerUp);
     fab.addEventListener("pointercancel", onPointerUp);
+
+    fab.addEventListener("pointerenter", () => {
+      if (!dragging) revealFab();
+    });
+    fab.addEventListener("pointerleave", () => {
+      if (!dragging) dockFab();
+    });
 
     fab.addEventListener("click", (e) => {
       if (dragging || moved || Date.now() < suppressClickUntil) {
@@ -780,6 +819,7 @@
     document.documentElement.appendChild(root);
     state.fab = fab;
     applyFabPosition(state.fabPos || defaultPos);
+    dockFab();
 
     window.addEventListener("resize", normalizeFabPositionOnViewportChange, { passive: true });
     if (window.visualViewport) {
