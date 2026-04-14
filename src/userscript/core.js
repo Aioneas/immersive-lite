@@ -43,6 +43,7 @@
     inflight: new Map(),
     batchQueue: null,
     cache: {},
+    cacheFlushTimer: 0,
     fabPos: null,
     fabDockTimer: 0,
   };

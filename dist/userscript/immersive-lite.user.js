@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Immersive Lite (Core)
 // @namespace    https://github.com/Aioneas/immersive-lite
-// @version      0.8.8
+// @version      0.8.9
 // @description  Core-only bilingual page translation with custom OpenAI-compatible API (no login/cloud/pricing).
 // @author       Aioneas
 // @match        *://*/*
@@ -69,6 +69,7 @@
     inflight: new Map(),
     batchQueue: null,
     cache: {},
+    cacheFlushTimer: 0,
     fabPos: null,
     fabDockTimer: 0,
   };
@@ -187,6 +188,9 @@
   }
 
 
+  const CACHE_LIMIT = 1200;
+  const CACHE_TRIM_TO = 1000;
+
   function hashText(str) {
     let h = 2166136261;
     for (let i = 0; i < str.length; i++) {
@@ -195,25 +199,106 @@
     }
     return (h >>> 0).toString(16);
   }
+
   function makeCacheKey(text) {
     const s = norm(state.settings);
     return [s.provider, s.model, s.targetLang, buildApiUrl(s), hashText(text)].join("|");
   }
+
+  function getCacheScopeLabel(settings) {
+    const s = norm(settings || state.settings);
+    return `${getProviderLabel(s.provider)} / ${s.model} / ${s.targetLang} / ${buildApiUrl(s)}`;
+  }
+
   function shouldSkipTranslationText(text) {
     return !hasTranslationValue(text);
   }
+
+  function normalizeCacheEntry(value) {
+    if (value && typeof value === "object" && typeof value.value === "string") {
+      return {
+        value: value.value,
+        at: Number(value.at || Date.now()),
+      };
+    }
+    if (typeof value === "string") {
+      return {
+        value,
+        at: Date.now(),
+      };
+    }
+    return null;
+  }
+
+  function normalizeCacheStore(store) {
+    const src = store && typeof store === "object" ? store : {};
+    const out = {};
+    for (const [key, value] of Object.entries(src)) {
+      const entry = normalizeCacheEntry(value);
+      if (entry) out[key] = entry;
+    }
+    return out;
+  }
+
+  function pruneCacheStore(cache) {
+    const keys = Object.keys(cache || {});
+    if (keys.length <= CACHE_LIMIT) return cache || {};
+    const sorted = keys.sort((a, b) => Number(cache[a]?.at || 0) - Number(cache[b]?.at || 0));
+    const next = { ...(cache || {}) };
+    for (const key of sorted.slice(0, Math.max(0, keys.length - CACHE_TRIM_TO))) {
+      delete next[key];
+    }
+    return next;
+  }
+
+  function scheduleCacheFlush() {
+    if (state.cacheFlushTimer) return;
+    state.cacheFlushTimer = setTimeout(async () => {
+      state.cacheFlushTimer = 0;
+      state.cache = pruneCacheStore(normalizeCacheStore(state.cache));
+      await gmSet(CACHE_KEY, state.cache);
+    }, 180);
+  }
+
   function getCache(text) {
     if (!state.settings.useCache) return null;
-    return state.cache[makeCacheKey(text)] || null;
+    const key = makeCacheKey(text);
+    const entry = normalizeCacheEntry(state.cache[key]);
+    if (!entry) return null;
+    state.cache[key] = { value: entry.value, at: Date.now() };
+    scheduleCacheFlush();
+    return entry.value;
   }
+
   async function putCache(text, translated) {
     if (!state.settings.useCache) return;
-    state.cache[makeCacheKey(text)] = translated;
-    const keys = Object.keys(state.cache);
-    if (keys.length > 1200) {
-      for (const k of keys.slice(0, keys.length - 1000)) delete state.cache[k];
+    const key = makeCacheKey(text);
+    state.cache[key] = {
+      value: String(translated || ""),
+      at: Date.now(),
+    };
+    state.cache = pruneCacheStore(state.cache);
+    scheduleCacheFlush();
+  }
+
+  async function clearCache() {
+    state.cache = {};
+    if (state.cacheFlushTimer) {
+      clearTimeout(state.cacheFlushTimer);
+      state.cacheFlushTimer = 0;
     }
-    await gmSet(CACHE_KEY, state.cache);
+    await gmSet(CACHE_KEY, {});
+  }
+
+  function getCacheStats() {
+    const total = Object.keys(state.cache || {}).length;
+    const scopePrefix = makeCacheKey("").split("|").slice(0, 4).join("|");
+    const currentScope = Object.keys(state.cache || {}).filter((k) => k.startsWith(scopePrefix)).length;
+    return {
+      total,
+      currentScope,
+      scopeLabel: getCacheScopeLabel(state.settings),
+    };
   }
 
 
@@ -627,12 +712,18 @@
         <div style="font-size:12px;color:#6f7f97;line-height:1.5;padding:10px 12px;background:#f4f8ff;border-radius:10px;">
           稳定：更稳、更省；推荐：默认，适合大多数页面；极速：更快看到结果。悬浮球支持拖动、记忆位置与靠边半隐藏。
         </div>
+        <div id="iml-cache-card" style="font-size:12px;color:#5d6d86;line-height:1.6;padding:10px 12px;background:#f8fafc;border:1px solid #e4ebf5;border-radius:10px;">
+          <div style="font-weight:600;color:#334b73;margin-bottom:4px;">缓存</div>
+          <div id="iml-cache-scope"></div>
+          <div id="iml-cache-stats" style="margin-top:2px;"></div>
+        </div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px;">
         <button id="iml-save" style="padding:11px;border:none;border-radius:11px;background:linear-gradient(135deg,#1677ff,#4f9bff);color:#fff;font-weight:600;">保存</button>
         <button id="iml-retranslate" style="padding:11px;border:none;border-radius:11px;background:#eef3fb;color:#334b73;">重新翻译</button>
+        <button id="iml-clear-cache" style="padding:11px;border:none;border-radius:11px;background:#eef3fb;color:#334b73;">清理缓存</button>
         <button id="iml-restore" style="padding:11px;border:none;border-radius:11px;background:#eef3fb;color:#334b73;">恢复原文</button>
-        <button id="iml-close2" style="padding:11px;border:none;border-radius:11px;background:#eef3fb;color:#334b73;">关闭</button>
+        <button id="iml-close2" style="grid-column:1 / -1;padding:11px;border:none;border-radius:11px;background:#eef3fb;color:#334b73;">关闭</button>
       </div>
       <div id="iml-status" style="color:#6f7f97;font-size:12px;margin-top:10px;line-height:1.5;"></div>
     `;
@@ -643,12 +734,20 @@
     const provider=$("iml-provider"), apiinput=$("iml-apiinput"), key=$("iml-key");
     const modelSelect=$("iml-model-select"), modelCustom=$("iml-model-custom");
     const lang=$("iml-lang"), display=$("iml-display"), speed=$("iml-speed");
+    const cacheScope=$("iml-cache-scope"), cacheStats=$("iml-cache-stats");
     const status=$("iml-status");
+
+    function refreshCacheInfo() {
+      const stats = getCacheStats();
+      cacheScope.textContent = `当前缓存隔离：${stats.scopeLabel}`;
+      cacheStats.textContent = `总缓存 ${stats.total} 条；当前服务/模型/语言/接口作用域下 ${stats.currentScope} 条。`;
+    }
 
     state.statusEl = status; state.panel = root;
     provider.value=s.provider||"openai"; apiinput.value=getApiInputValue(s);
     key.value=s.apiKey||""; lang.value=s.targetLang||"zh-CN"; display.value=s.displayMode||"bilingual"; speed.value=s.speedMode||"fast";
     buildModelOptions(provider.value, modelSelect, modelCustom, s.model||"");
+    refreshCacheInfo();
 
     provider.addEventListener("change", () => {
       if (!apiinput.value.trim()) {
@@ -680,7 +779,13 @@
         speedMode: speed.value,
       });
       await gmSet(KEY, state.settings);
+      refreshCacheInfo();
       setStatus("设置已保存");
+    });
+    $("iml-clear-cache").addEventListener("click", async () => {
+      await clearCache();
+      refreshCacheInfo();
+      setStatus("缓存已清理");
     });
     $("iml-restore").addEventListener("click", () => restorePage());
     $("iml-retranslate").addEventListener("click", async () => { restorePage(); await translatePage(); });
@@ -1005,7 +1110,7 @@
   if (window.self !== window.top) return;
 
   state.settings = await loadSettingsWithMigration();
-  state.cache = (await gmGet(CACHE_KEY, {})) || {};
+  state.cache = normalizeCacheStore((await gmGet(CACHE_KEY, {})) || {});
   state.fabPos = await gmGet(FAB_POS_KEY, null);
   mountUI();
 

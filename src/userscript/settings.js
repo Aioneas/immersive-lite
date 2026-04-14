@@ -73,12 +73,18 @@
         <div style="font-size:12px;color:#6f7f97;line-height:1.5;padding:10px 12px;background:#f4f8ff;border-radius:10px;">
           稳定：更稳、更省；推荐：默认，适合大多数页面；极速：更快看到结果。悬浮球支持拖动、记忆位置与靠边半隐藏。
         </div>
+        <div id="iml-cache-card" style="font-size:12px;color:#5d6d86;line-height:1.6;padding:10px 12px;background:#f8fafc;border:1px solid #e4ebf5;border-radius:10px;">
+          <div style="font-weight:600;color:#334b73;margin-bottom:4px;">缓存</div>
+          <div id="iml-cache-scope"></div>
+          <div id="iml-cache-stats" style="margin-top:2px;"></div>
+        </div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px;">
         <button id="iml-save" style="padding:11px;border:none;border-radius:11px;background:linear-gradient(135deg,#1677ff,#4f9bff);color:#fff;font-weight:600;">保存</button>
         <button id="iml-retranslate" style="padding:11px;border:none;border-radius:11px;background:#eef3fb;color:#334b73;">重新翻译</button>
+        <button id="iml-clear-cache" style="padding:11px;border:none;border-radius:11px;background:#eef3fb;color:#334b73;">清理缓存</button>
         <button id="iml-restore" style="padding:11px;border:none;border-radius:11px;background:#eef3fb;color:#334b73;">恢复原文</button>
-        <button id="iml-close2" style="padding:11px;border:none;border-radius:11px;background:#eef3fb;color:#334b73;">关闭</button>
+        <button id="iml-close2" style="grid-column:1 / -1;padding:11px;border:none;border-radius:11px;background:#eef3fb;color:#334b73;">关闭</button>
       </div>
       <div id="iml-status" style="color:#6f7f97;font-size:12px;margin-top:10px;line-height:1.5;"></div>
     `;
@@ -89,12 +95,20 @@
     const provider=$("iml-provider"), apiinput=$("iml-apiinput"), key=$("iml-key");
     const modelSelect=$("iml-model-select"), modelCustom=$("iml-model-custom");
     const lang=$("iml-lang"), display=$("iml-display"), speed=$("iml-speed");
+    const cacheScope=$("iml-cache-scope"), cacheStats=$("iml-cache-stats");
     const status=$("iml-status");
+
+    function refreshCacheInfo() {
+      const stats = getCacheStats();
+      cacheScope.textContent = `当前缓存隔离：${stats.scopeLabel}`;
+      cacheStats.textContent = `总缓存 ${stats.total} 条；当前服务/模型/语言/接口作用域下 ${stats.currentScope} 条。`;
+    }
 
     state.statusEl = status; state.panel = root;
     provider.value=s.provider||"openai"; apiinput.value=getApiInputValue(s);
     key.value=s.apiKey||""; lang.value=s.targetLang||"zh-CN"; display.value=s.displayMode||"bilingual"; speed.value=s.speedMode||"fast";
     buildModelOptions(provider.value, modelSelect, modelCustom, s.model||"");
+    refreshCacheInfo();
 
     provider.addEventListener("change", () => {
       if (!apiinput.value.trim()) {
@@ -126,7 +140,13 @@
         speedMode: speed.value,
       });
       await gmSet(KEY, state.settings);
+      refreshCacheInfo();
       setStatus("设置已保存");
+    });
+    $("iml-clear-cache").addEventListener("click", async () => {
+      await clearCache();
+      refreshCacheInfo();
+      setStatus("缓存已清理");
     });
     $("iml-restore").addEventListener("click", () => restorePage());
     $("iml-retranslate").addEventListener("click", async () => { restorePage(); await translatePage(); });
