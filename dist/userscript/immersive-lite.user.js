@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Immersive Lite (Core)
 // @namespace    https://github.com/Aioneas/immersive-lite
-// @version      0.7.7
+// @version      0.7.8
 // @description  Core-only bilingual page translation with custom OpenAI-compatible API (no login/cloud/pricing).
 // @author       Aioneas
 // @match        *://*/*
@@ -164,7 +164,7 @@
   function setFabState(busy) {
     if (!state.fab) return;
     state.fab.textContent = busy ? "…" : "译";
-    state.fab.style.opacity = busy ? ".38" : ".88";
+    state.fab.style.opacity = busy ? ".34" : ".78";
   }
 
   function clampFabPosition(left, top) {
@@ -193,6 +193,15 @@
   async function saveFabPosition(pos) {
     state.fabPos = clampFabPosition(Number(pos.left || 0), Number(pos.top || 0));
     await gmSet(FAB_POS_KEY, state.fabPos);
+  }
+
+  function normalizeFabPositionOnViewportChange() {
+    if (!state.fabPos) return;
+    const next = clampFabPosition(state.fabPos.left, state.fabPos.top);
+    const changed = next.left !== state.fabPos.left || next.top !== state.fabPos.top;
+    state.fabPos = next;
+    applyFabPosition(next);
+    if (changed) gmSet(FAB_POS_KEY, next);
   }
 
   function hashText(str) {
@@ -687,12 +696,12 @@
     if (document.getElementById("iml-ui-root")) return;
     const root = document.createElement("div");
     root.id = "iml-ui-root";
-    root.style.cssText = "position:fixed;z-index:2147483646;";
+    root.style.cssText = "position:fixed;z-index:2147483646;pointer-events:none;";
 
     const fab = document.createElement("button");
     fab.id = "iml-fab-main";
     fab.textContent = "译";
-    fab.style.cssText = "position:fixed;width:42px;height:42px;border:none;border-radius:21px;background:rgba(88,96,110,.78);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);color:#fff;font-size:17px;font-weight:700;box-shadow:0 6px 16px rgba(0,0,0,.14),0 2px 6px rgba(0,0,0,.10);touch-action:none;user-select:none;-webkit-user-select:none;";
+    fab.style.cssText = "position:fixed;width:42px;height:42px;border:none;border-radius:21px;background:rgba(88,96,110,.64);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);color:#fff;font-size:17px;font-weight:700;box-shadow:0 4px 12px rgba(0,0,0,.10),0 1px 4px rgba(0,0,0,.08);touch-action:none;user-select:none;-webkit-user-select:none;pointer-events:auto;transition:opacity .18s ease, transform .18s ease, background-color .18s ease;";
 
     let clickTimer = null;
     let suppressClickUntil = 0;
@@ -771,6 +780,12 @@
     document.documentElement.appendChild(root);
     state.fab = fab;
     applyFabPosition(state.fabPos || defaultPos);
+
+    window.addEventListener("resize", normalizeFabPositionOnViewportChange, { passive: true });
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", normalizeFabPositionOnViewportChange, { passive: true });
+      window.visualViewport.addEventListener("scroll", normalizeFabPositionOnViewportChange, { passive: true });
+    }
   }
 
   state.settings = await loadSettingsWithMigration();
