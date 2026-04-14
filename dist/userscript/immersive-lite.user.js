@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Immersive Lite (Core)
 // @namespace    https://github.com/Aioneas/immersive-lite
-// @version      0.8.6
+// @version      0.8.7
 // @description  Core-only bilingual page translation with custom OpenAI-compatible API (no login/cloud/pricing).
 // @author       Aioneas
 // @match        *://*/*
@@ -40,6 +40,7 @@
     provider: "openai",
     apiUrl: "",
     baseUrl: "https://api.openai.com",
+    apiInputRaw: "",
     apiKey: "",
     model: "gpt-5.4",
     targetLang: "zh-CN",
@@ -117,16 +118,17 @@
     return /^https?:\/\//i.test(s) ? s : `https://${s}`;
   }
   function normalizeApiInput(raw) {
-    const v = ensureHttp(raw || "").replace(/\/$/, "");
-    if (!v) return { apiUrl: "", baseUrl: "" };
+    const input = String(raw || "").trim();
+    const v = ensureHttp(input).replace(/\/$/, "");
+    if (!v) return { apiUrl: "", baseUrl: "", apiInputRaw: input };
     if (/(\/v\d+)?\/chat\/completions$/i.test(v)) {
-      return { apiUrl: v, baseUrl: "" };
+      return { apiUrl: v, baseUrl: "", apiInputRaw: input };
     }
-    return { apiUrl: "", baseUrl: v };
+    return { apiUrl: "", baseUrl: v, apiInputRaw: input };
   }
 
   function getApiInputValue(settings) {
-    return String(settings.apiUrl || settings.baseUrl || "").trim();
+    return String(settings.apiInputRaw || settings.apiUrl || settings.baseUrl || "").trim();
   }
 
   function buildApiUrl(s) {
@@ -145,6 +147,10 @@
     } else if (t.provider === "openai") {
       if (!t.baseUrl) t.baseUrl = "https://api.openai.com";
       if (!t.model) t.model = "gpt-5.4";
+    }
+
+    if (!t.apiInputRaw) {
+      t.apiInputRaw = String(t.apiUrl || t.baseUrl || "").trim();
     }
 
     const speed = ["balanced", "fast", "aggressive"].includes(t.speedMode) ? t.speedMode : "fast";
@@ -769,6 +775,7 @@
         provider: provider.value,
         apiUrl: apiParsed.apiUrl,
         baseUrl: apiParsed.baseUrl,
+        apiInputRaw: apiParsed.apiInputRaw,
         apiKey: key.value.trim(),
         model,
         targetLang: lang.value.trim() || "zh-CN",
