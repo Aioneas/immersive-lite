@@ -1,6 +1,6 @@
 {
   "name": "immersive-lite",
-  "description": "Local-first lightweight bilingual web translation rebuilt from the old open-source Immersive Translate core.",
+  "description": "Stable local-first web translation userscript for iOS Safari with batch queue, cache, draggable semi-hidden floating ball, and OpenAI-compatible APIs.",
   "private": false,
   "has_issues": true,
   "has_projects": false,

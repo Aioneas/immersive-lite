@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Immersive Lite (Core)
 // @namespace    https://github.com/Aioneas/immersive-lite
-// @version      0.8.1
+// @version      0.8.2
 // @description  Core-only bilingual page translation with custom OpenAI-compatible API (no login/cloud/pricing).
 // @author       Aioneas
 // @match        *://*/*
@@ -167,9 +167,25 @@
     state.fab.style.opacity = busy ? ".34" : ".78";
   }
 
+  function getFabSize() {
+    return 50;
+  }
+
+  function getFabHalfHiddenLeft(edge) {
+    const size = getFabSize();
+    const vw = window.innerWidth || document.documentElement.clientWidth || 390;
+    if (edge === "left") return -Math.round(size * 0.4);
+    if (edge === "right") return vw - Math.round(size * 0.6);
+    return 0;
+  }
+
+  function getFabDefaultPosition() {
+    return clampFabPosition((window.innerWidth || 390) - 64, (window.innerHeight || 844) - 94);
+  }
+
   function getFabEdgeState(pos) {
     const p = clampFabPosition(Number(pos.left || 0), Number(pos.top || 0));
-    const size = 42;
+    const size = getFabSize();
     const vw = window.innerWidth || document.documentElement.clientWidth || 390;
     const leftGap = p.left;
     const rightGap = vw - p.left - size;
@@ -179,7 +195,7 @@
   }
 
   function clampFabPosition(left, top) {
-    const size = 42;
+    const size = getFabSize();
     const vw = window.innerWidth || document.documentElement.clientWidth || 390;
     const vh = window.innerHeight || document.documentElement.clientHeight || 844;
     const minLeft = 6;
@@ -198,8 +214,8 @@
     const p = clampFabPosition(Number(pos.left || 0), Number(pos.top || 0));
     const edge = getFabEdgeState(p);
     let left = p.left;
-    if (!opts.reveal && edge === "left") left = -18;
-    if (!opts.reveal && edge === "right") left = (window.innerWidth || document.documentElement.clientWidth || 390) - 24;
+    if (!opts.reveal && edge === "left") left = getFabHalfHiddenLeft("left");
+    if (!opts.reveal && edge === "right") left = getFabHalfHiddenLeft("right");
 
     state.fab.style.left = left + "px";
     state.fab.style.top = p.top + "px";
@@ -665,7 +681,7 @@
           </select>
         </div>
         <div style="font-size:12px;color:#6f7f97;line-height:1.5;padding:10px 12px;background:#f4f8ff;border-radius:10px;">
-          稳定：更稳、更省；推荐：默认，适合大多数页面；极速：更快看到结果。其余复杂参数不需要你自己调。
+          稳定：更稳、更省；推荐：默认，适合大多数页面；极速：更快看到结果。悬浮球支持拖动、记忆位置与靠边半隐藏。
         </div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px;">
@@ -731,7 +747,7 @@
     const fab = document.createElement("button");
     fab.id = "iml-fab-main";
     fab.textContent = "译";
-    fab.style.cssText = "position:fixed;width:42px;height:42px;border:none;border-radius:21px;background:rgba(88,96,110,.64);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);color:#fff;font-size:17px;font-weight:700;box-shadow:0 4px 12px rgba(0,0,0,.10),0 1px 4px rgba(0,0,0,.08);touch-action:none;user-select:none;-webkit-user-select:none;pointer-events:auto;transition:opacity .18s ease, transform .18s ease, background-color .18s ease, left .18s ease;";
+    fab.style.cssText = "position:fixed;width:50px;height:50px;border:none;border-radius:25px;background:rgba(88,96,110,.64);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);color:#fff;font-size:20px;font-weight:700;box-shadow:0 6px 16px rgba(0,0,0,.12),0 2px 6px rgba(0,0,0,.09);touch-action:none;user-select:none;-webkit-user-select:none;pointer-events:auto;transition:opacity .18s ease, transform .18s ease, background-color .18s ease, left .18s ease;";
 
     let clickTimer = null;
     let suppressClickUntil = 0;
@@ -743,7 +759,7 @@
     let moved = false;
     let dragging = false;
 
-    const defaultPos = clampFabPosition((window.innerWidth || 390) - 56, (window.innerHeight || 844) - 82);
+    const defaultPos = getFabDefaultPosition();
 
     const onPointerDown = (e) => {
       if (e.button != null && e.button !== 0) return;
@@ -776,20 +792,25 @@
     const onPointerUp = async (e) => {
       if (!dragging) return;
       if (pointerId !== null && e.pointerId !== pointerId) return;
+      const wasMoved = moved;
       dragging = false;
       if (fab.releasePointerCapture && pointerId !== null) {
         try { fab.releasePointerCapture(pointerId); } catch {}
       }
       pointerId = null;
 
-      if (moved) {
+      if (wasMoved) {
         const rect = fab.getBoundingClientRect();
         await saveFabPosition({ left: rect.left, top: rect.top });
         if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
         suppressClickUntil = Date.now() + 350;
+        moved = false;
         dockFab();
         e.preventDefault();
+        return;
       }
+
+      moved = false;
     };
 
     fab.addEventListener("pointerdown", onPointerDown);
