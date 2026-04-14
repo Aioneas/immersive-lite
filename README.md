@@ -1,143 +1,98 @@
 # Immersive Lite
 
-A lightweight patch of the official [Immersive Translate](https://immersivetranslate.com/) userscript.
+面向 **iOS Safari Userscripts / Tampermonkey** 的沉浸式翻译精简版。
 
-**No login. No cloud. No tracking. No pricing prompts.**
+目标：
+- 只保留核心网页翻译
+- 只保留本地设置 + 自定义 OpenAI-compatible API
+- 去掉云同步、账号登录、价格/付费、客服/反馈、统计追踪等非核心功能
+- 适配 iOS Safari Userscripts 的真实使用场景
 
-Keeps only core bilingual web translation + custom translation services (OpenAI / OpenRouter / DeepSeek / any OpenAI-compatible API).
+## 安装
 
-## Install (Userscript / iOS Safari)
+- Userscripts / Tampermonkey 安装地址：
+  [immersive-lite.user.js](https://raw.githubusercontent.com/Aioneas/immersive-lite/main/dist/userscript/immersive-lite.user.js)
 
-1. Install [Userscripts](https://apps.apple.com/app/userscripts/id1463298887) from App Store (iOS) or [Tampermonkey](https://www.tampermonkey.net/) (desktop)
-2. Tap the link below to install:
+## 当前 userscript 交互
 
-   **[Install immersive-lite.user.js](https://raw.githubusercontent.com/Aioneas/immersive-lite/main/dist/userscript/immersive-lite.user.js)**
+- 单击悬浮球 **“译”**：整页翻译
+- 双击悬浮球：打开设置
+- 设置面板内提供：
+  - Provider：`openai / deepseek / custom`
+  - API 完整地址优先
+  - Base URL 自动拼接 `/v1/chat/completions`
+  - Model 下拉选择 + custom
+  - 目标语言
+  - 显示模式：`双语对照 / 仅译文`
+  - 速度模式：`稳定 / 推荐 / 极速`
+  - 恢复原文 / 重新翻译
 
-3. Open any web page → use the floating button to translate
+## 当前性能策略（v0.8）
 
-## What's removed
+本仓库当前 userscript 不再走“一整页大请求”的慢路径，而是采用 **双阶段策略**：
 
-- Account login / cloud sync
-- Pricing / subscription / upgrade prompts
-- Pro / Max membership gates
-- Telemetry / analytics / performance reporting
-- Feedback / customer service links
-- Cloud config fetching
+### 1. 前台快速响应
+- 优先抓取当前视口附近的前段内容
+- 先把用户眼前最可能立即阅读的部分快速翻出来
+- 使用短时间窗批队列，把零碎任务合并成更合理的小批请求
 
-## What's kept
+### 2. 后台安静补全
+- 当前段翻出后，不打断阅读
+- 利用用户阅读前面内容的时间，在后台继续补后面的页面内容
+- 这样既保留“首屏快响应”，又避免整页都要先等完
 
-- Core bilingual web page translation
-- All built-in translation services (Google, DeepL, Bing, Yandex, etc.)
-- Custom OpenAI-compatible translation services
-- Local settings panel
-- Page rules / special rules
-- Translation cache
-- Dual-language display styles
+## 缓存策略（v0.8）
 
-## How it works
+参考 KISS Translator 思路并针对 userscript 场景做简化：
 
-This is a **patched version** of the official `immersive-translate.user.js` (v1.28.2).
+- 只缓存 **成功翻译结果**
+- key 基于：`provider + model + targetLang + apiUrl + textHash`
+- 命中缓存时直接返回，不重复消耗请求
+- 使用轻量 **LRU / 最近访问时间** 裁剪旧缓存
+- 自动限量，避免本地存储膨胀
+- 延迟写盘，避免每条命中都频繁写存储拖慢页面
 
-The patch script (`scripts/patch.mjs`):
-- Replaces cloud/analytics endpoints with localhost (silently fails)
-- Injects a fetch interceptor to block cloud requests
-- Neutralizes login/upgrade modal functions
-- Disables telemetry flags
+## 为什么仍然不会和 Google/DeepL 一样快
 
-## Rebuild from latest official
+因为当前 userscript 走的是 **OpenAI-compatible LLM** 路线，而不是 Google / DeepL 这种专用机器翻译接口。
 
-```bash
-# Download latest official userscript
-curl -L -o scripts/original.user.js https://download.immersivetranslate.com/immersive-translate.user.js
-# Run patch
-node scripts/patch.mjs
-# Output: immersive-lite.user.js
-cp immersive-lite.user.js dist/userscript/
-```
+LLM 的特点是：
+- 每次都要做推理
+- 输出 JSON
+- token 生成成本比专用翻译 API 高
 
-## License
+所以这个项目的优化方向是：
+- 尽量降低首屏等待
+- 尽量减少重复请求
+- 尽量把用户感知做快
 
-The original Immersive Translate userscript is proprietary.
-This patch is for **personal use only** and is not redistributed as a standalone product.
-The patch script itself is MIT licensed.
-## Base and references
+而不是和专用机器翻译接口拼绝对延迟。
 
-### Base code
-- `old-immersive-translate` (MPL-2.0)
-- upstream ancestor: `Traduzir-paginas-web / TWP` (MPL-2.0)
+## 仓库方向
 
-### Reference-only inspirations
-The following projects are studied for architecture and ideas, but their code is **not copied** into this repository unless license compatibility and attribution are handled explicitly:
-- `openai-translator/openai-translator` (AGPL-3.0) — provider UX and OpenAI-compatible ideas
-- `pot-app/pot-desktop` (GPL-3.0) — multi-provider config design ideas
-- `openai-translator/bob-plugin-openai-translator` (CC BY-NC-SA 4.0) — model/base-url option ideas only
+### 保留
+- 网页翻译
+- 双语对照 / 仅译文
+- 本地设置
+- 本地缓存
+- OpenAI-compatible / DeepSeek / custom
+- iOS Safari Userscripts 可用性
 
-### Compatible references
-- `mozilla/firefox-translations` (MPL-2.0) — local-first/privacy-oriented product direction
-- `sienori/simple-translate` (MPL-2.0) — compact options structure and minimal settings patterns
+### 明确不做
+- 账号系统
+- 云同步
+- 定价/升级/订阅入口
+- 统计追踪
+- 反馈/客服/增长入口
+- 任何非本地优先的 SaaS 化功能
 
-## Lite scope
+## 参考思路
 
-### Keep
-- web page translation
-- bilingual display
-- special page rules
-- custom dictionary
-- local cache
-- import/export settings
-- lightweight popup/options UI
-- custom OpenAI-compatible translation service
+- `old-immersive-translate`：视口优先、按长度切分、老牌网页翻译交互思路
+- `KISS Translator`：批队列、缓存、按 API 能力调度的思路
 
-### Remove / avoid
-- account system
-- login
-- cloud sync
-- pricing / pro / max / subscription
-- donation entrypoints
-- feedback / Telegram / release-note funnels
-- telemetry / analytics
-- reward/store/growth UI
-- unrelated AI assistant features
-- non-core SaaS dependencies
-
-## Roadmap
-
-### v0.1
-- Remove non-core UI and links
-- Add `openai_compatible` page translation service
-- Add local config for base URL / API key / model
-- Keep old content-script translation pipeline
-
-### v0.1.1
-- Harden `openai_compatible` response parsing
-- Add provider presets and connection test
-- Remove PDF legacy and donation/resource leftovers
-
-### v0.2
-- Simplify popup and options information architecture
-- Reduce permissions and dead code
-- Prepare Safari / Userscripts adaptation layer
-
-### v0.2.1
-- Add runtime adapter (`extension` / `userscript` / `web`)
-- Add preview userscript entry and userscript build target
-- Start reducing extension-only direct dependencies in shared libs
-
-### v0.2.2
-- Add userscript shim + minimal userscript controller
-- Add GM storage fallback prototype
-- Keep pushing `openai_compatible` toward standalone userscript usage
-
-### v0.2.3
-- Bundle translationService into userscript output
-- Allow OpenAI-compatible requests to use runtime.request (GM)
-- Support extra headers for third-party OpenAI-compatible gateways
-
-### v0.3
-- Userscript/Safari build target usable on-device
-- More provider presets (DeepSeek-compatible / OpenRouter-compatible)
-- GM storage + minimal local settings flow
+当前实现是结合以上思路，针对 **Userscripts / iOS Safari** 环境重新收敛出的更轻量版本。
 
 ## License
 
-This repository contains MPL-2.0 based code and should remain compliant with MPL-2.0 for covered files.
+本仓库当前目标是维护一个本地优先、精简、可持续迭代的 userscript 版本；涉及上游来源的文件需继续遵守对应许可证要求。
