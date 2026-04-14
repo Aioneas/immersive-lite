@@ -45,6 +45,7 @@
     model: "gpt-5.4",
     targetLang: "zh-CN",
     displayMode: "bilingual",
+    speedMode: "fast",
     useCache: true,
   };
 
@@ -114,6 +115,7 @@
       if (!t.model) t.model = "gpt-5.4";
     }
     t.displayMode = t.displayMode === "translated" ? "translated" : "bilingual";
+    t.speedMode = ["balanced", "fast", "aggressive"].includes(t.speedMode) ? t.speedMode : "fast";
     t.useCache = t.useCache !== false;
     return t;
   }
@@ -393,13 +395,16 @@
     node.setAttribute("data-iml-translated", "1");
   }
 
-  const FLOW_CONFIG = {
-    batchInterval: 80,
-    batchSize: 6,
-    batchLength: 1000,
-    concurrency: 14,
-    statusThrottleMs: 180,
+  const FLOW_PRESETS = {
+    balanced: { batchInterval: 140, batchSize: 8, batchLength: 1300, concurrency: 10, statusThrottleMs: 220 },
+    fast: { batchInterval: 80, batchSize: 6, batchLength: 1000, concurrency: 14, statusThrottleMs: 180 },
+    aggressive: { batchInterval: 40, batchSize: 6, batchLength: 900, concurrency: 18, statusThrottleMs: 140 },
   };
+
+  function getFlowConfig() {
+    const mode = state.settings.speedMode || "fast";
+    return FLOW_PRESETS[mode] || FLOW_PRESETS.fast;
+  }
 
   function getOrderedNodes() {
     const nodes = pickNodes();
@@ -415,11 +420,12 @@
   }
 
   async function translateNodes(nodes, runId, statusPrefix) {
+    const flow = getFlowConfig();
     if (state.batchQueue) state.batchQueue.destroy();
     state.batchQueue = createBatchQueue(translateMany, {
-      batchInterval: FLOW_CONFIG.batchInterval,
-      batchSize: FLOW_CONFIG.batchSize,
-      batchLength: FLOW_CONFIG.batchLength,
+      batchInterval: flow.batchInterval,
+      batchSize: flow.batchSize,
+      batchLength: flow.batchLength,
     });
 
     const total = nodes.length;
@@ -441,7 +447,7 @@
           if (node && node.isConnected) applyTranslation(node, orig, tr);
           done++;
           const now = Date.now();
-          if (now - lastStatusAt > FLOW_CONFIG.statusThrottleMs || done === total) {
+          if (now - lastStatusAt > flow.statusThrottleMs || done === total) {
             setStatus(`${statusPrefix} ${done}/${total}`);
             lastStatusAt = now;
           }
@@ -452,7 +458,7 @@
       }
     }
 
-    const workerCount = Math.min(FLOW_CONFIG.concurrency, nodes.length || 1);
+    const workerCount = Math.min(flow.concurrency, nodes.length || 1);
     await Promise.all(Array.from({ length: workerCount }, () => worker()));
     if (state.batchQueue) { state.batchQueue.destroy(); state.batchQueue = null; }
     return { done, failed, total };
@@ -528,7 +534,7 @@
       <div style="display:flex;justify-content:flex-start;align-items:center;margin-bottom:10px;">
         <div>
           <div style="font-size:16px;font-weight:700;color:#10213a;">Immersive Lite</div>
-          <div style="font-size:12px;color:#6f7f97;margin-top:2px;">单一路径流式翻译 + 智能缓存 v0.9</div>
+          <div style="font-size:12px;color:#6f7f97;margin-top:2px;">单一路径流式翻译 + 智能缓存 + 简化速度模式 v0.9</div>
         </div>
       </div>
       <div style="display:grid;gap:10px;">
@@ -567,8 +573,16 @@
             </select>
           </div>
         </div>
+        <div>
+          <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">速度模式</label>
+          <select id="iml-speed" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;">
+            <option value="balanced">稳定</option>
+            <option value="fast">推荐</option>
+            <option value="aggressive">极速</option>
+          </select>
+        </div>
         <div style="font-size:12px;color:#6f7f97;line-height:1.5;padding:10px 12px;background:#f4f8ff;border-radius:10px;">
-          开启后会优先使用缓存，避免重复请求；翻译采用单一路径流式调度，边翻边显示，减少阅读等待。
+          速度模式是给普通用户的简化开关：稳定=更稳，推荐=默认，极速=更快；其余复杂参数不用你手动调。
         </div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px;">
@@ -585,12 +599,12 @@
     const $ = (id) => panel.querySelector("#" + id);
     const provider=$("iml-provider"), apiurl=$("iml-apiurl"), base=$("iml-base"), key=$("iml-key");
     const modelSelect=$("iml-model-select"), modelCustom=$("iml-model-custom");
-    const lang=$("iml-lang"), display=$("iml-display");
+    const lang=$("iml-lang"), display=$("iml-display"), speed=$("iml-speed");
     const status=$("iml-status");
 
     state.statusEl = status; state.panel = root;
     provider.value=s.provider||"openai"; apiurl.value=s.apiUrl||""; base.value=s.baseUrl||"";
-    key.value=s.apiKey||""; lang.value=s.targetLang||"zh-CN"; display.value=s.displayMode||"bilingual";
+    key.value=s.apiKey||""; lang.value=s.targetLang||"zh-CN"; display.value=s.displayMode||"bilingual"; speed.value=s.speedMode||"fast";
     buildModelOptions(provider.value, modelSelect, modelCustom, s.model||"");
 
     provider.addEventListener("change", () => {
@@ -616,6 +630,7 @@
         model,
         targetLang: lang.value.trim() || "zh-CN",
         displayMode: display.value,
+        speedMode: speed.value,
       });
       await gmSet(KEY, state.settings);
       setStatus("设置已保存");
