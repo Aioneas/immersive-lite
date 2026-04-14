@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Immersive Lite (Core)
 // @namespace    https://github.com/Aioneas/immersive-lite
-// @version      0.9.0
+// @version      0.9.1
 // @description  Core-only bilingual page translation with custom OpenAI-compatible API (no login/cloud/pricing).
 // @author       Aioneas
 // @match        *://*/*
@@ -90,6 +90,23 @@
       if (typeof GM_setValue !== "undefined") return GM_setValue(k, v);
       localStorage.setItem(k, JSON.stringify(v));
     } catch {}
+  }
+
+  async function loadSettingsWithMigration() {
+    const current = await gmGet(KEY, null);
+    if (current && typeof current === "object") return norm({ ...DEFAULT, ...current });
+
+    const legacyKeys = ["immersive_lite_v8", "immersive_lite_v6", "immersive_lite_v3", "immersive_lite_core_settings_v3"];
+    for (const legacyKey of legacyKeys) {
+      const legacy = await gmGet(legacyKey, null);
+      if (legacy && typeof legacy === "object") {
+        const migrated = norm({ ...DEFAULT, ...legacy });
+        await gmSet(KEY, migrated);
+        return migrated;
+      }
+    }
+
+    return norm(DEFAULT);
   }
 
   function ensureHttp(url) {
@@ -668,7 +685,7 @@
     setFabState("idle");
   }
 
-  state.settings = norm(await gmGet(KEY, DEFAULT));
+  state.settings = await loadSettingsWithMigration();
   state.cacheMap = (await gmGet(CACHE_KEY, {})) || {};
   pruneCache();
   mountUI();
