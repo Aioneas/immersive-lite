@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Immersive Lite (Core)
 // @namespace    https://github.com/Aioneas/immersive-lite
-// @version      0.9.1
+// @version      0.9.2
 // @description  Core-only bilingual page translation with custom OpenAI-compatible API (no login/cloud/pricing).
 // @author       Aioneas
 // @match        *://*/*
@@ -96,7 +96,7 @@
     const current = await gmGet(KEY, null);
     if (current && typeof current === "object") return norm({ ...DEFAULT, ...current });
 
-    const legacyKeys = ["immersive_lite_v8", "immersive_lite_v6", "immersive_lite_v3", "immersive_lite_core_settings_v3"];
+    const legacyKeys = ["immersive_lite_v8", "immersive_lite_v7", "immersive_lite_v6", "immersive_lite_v3", "immersive_lite_core_settings_v3"];
     for (const legacyKey of legacyKeys) {
       const legacy = await gmGet(legacyKey, null);
       if (legacy && typeof legacy === "object") {
@@ -137,6 +137,15 @@
     return t;
   }
 
+  function getConfigError(settings) {
+    const s = norm(settings || state.settings || DEFAULT);
+    const url = buildApiUrl(s);
+    if (!url) return "请先设置 API 地址";
+    if (!s.apiKey && s.provider !== "custom") return "请先设置 API Key";
+    if (!s.model) return "请先设置模型";
+    return "";
+  }
+
   function setStatus(msg, err) {
     if (!state.statusEl) return;
     state.statusEl.textContent = msg || "";
@@ -150,7 +159,7 @@
     }
     if (current === "busy") {
       state.fab.style.opacity = ".18";
-      state.fab.style.pointerEvents = "none";
+      state.fab.style.pointerEvents = "auto";
     } else {
       state.fab.style.opacity = "1";
       state.fab.style.pointerEvents = "auto";
@@ -483,6 +492,14 @@
 
   async function translatePage() {
     if (state.translating || state.translated) return;
+
+    const configError = getConfigError(state.settings);
+    if (configError) {
+      setStatus(configError, true);
+      setFabState("idle");
+      return;
+    }
+
     state.translating = true;
     state.runId += 1;
     const runId = state.runId;
@@ -504,7 +521,8 @@
         if (runId === state.runId && !state.translating) setFabState("idle");
       }, 1200);
     } catch (e) {
-      setStatus("翻译失败: " + (e?.message || e), true);
+      const msg = e?.message || String(e || "");
+      setStatus("翻译失败: " + msg, true);
       setFabState("idle");
     } finally {
       if (runId === state.runId) {
