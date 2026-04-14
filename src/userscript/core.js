@@ -44,6 +44,8 @@
     batchQueue: null,
     cache: {},
     cacheFlushTimer: 0,
+    cacheWriteSeq: 0,
+    cacheWriteChain: Promise.resolve(),
     fabPos: null,
     fabDockTimer: 0,
   };
