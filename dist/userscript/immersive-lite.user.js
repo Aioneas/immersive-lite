@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Immersive Lite (Core)
 // @namespace    https://github.com/Aioneas/immersive-lite
-// @version      0.7.6
+// @version      0.7.7
 // @description  Core-only bilingual page translation with custom OpenAI-compatible API (no login/cloud/pricing).
 // @author       Aioneas
 // @match        *://*/*
@@ -164,11 +164,11 @@
   function setFabState(busy) {
     if (!state.fab) return;
     state.fab.textContent = busy ? "…" : "译";
-    state.fab.style.opacity = busy ? ".65" : "1";
+    state.fab.style.opacity = busy ? ".38" : ".88";
   }
 
   function clampFabPosition(left, top) {
-    const size = 50;
+    const size = 42;
     const vw = window.innerWidth || document.documentElement.clientWidth || 390;
     const vh = window.innerHeight || document.documentElement.clientHeight || 844;
     const minLeft = 6;
@@ -692,9 +692,10 @@
     const fab = document.createElement("button");
     fab.id = "iml-fab-main";
     fab.textContent = "译";
-    fab.style.cssText = "position:fixed;width:50px;height:50px;border:none;border-radius:25px;background:linear-gradient(135deg,#1677ff 0%,#4b9eff 100%);color:#fff;font-size:20px;font-weight:700;box-shadow:0 10px 24px rgba(22,119,255,.35),0 4px 10px rgba(0,0,0,.18);touch-action:none;user-select:none;-webkit-user-select:none;";
+    fab.style.cssText = "position:fixed;width:42px;height:42px;border:none;border-radius:21px;background:rgba(88,96,110,.78);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);color:#fff;font-size:17px;font-weight:700;box-shadow:0 6px 16px rgba(0,0,0,.14),0 2px 6px rgba(0,0,0,.10);touch-action:none;user-select:none;-webkit-user-select:none;";
 
     let clickTimer = null;
+    let suppressClickUntil = 0;
     let pointerId = null;
     let startX = 0;
     let startY = 0;
@@ -703,7 +704,7 @@
     let moved = false;
     let dragging = false;
 
-    const defaultPos = clampFabPosition((window.innerWidth || 390) - 64, (window.innerHeight || 844) - 94);
+    const defaultPos = clampFabPosition((window.innerWidth || 390) - 56, (window.innerHeight || 844) - 82);
 
     const onPointerDown = (e) => {
       if (e.button != null && e.button !== 0) return;
@@ -745,7 +746,7 @@
         const rect = fab.getBoundingClientRect();
         await saveFabPosition({ left: rect.left, top: rect.top });
         if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
-        moved = false;
+        suppressClickUntil = Date.now() + 350;
         e.preventDefault();
       }
     };
@@ -756,7 +757,7 @@
     fab.addEventListener("pointercancel", onPointerUp);
 
     fab.addEventListener("click", (e) => {
-      if (moved || dragging) {
+      if (dragging || moved || Date.now() < suppressClickUntil) {
         e.preventDefault();
         e.stopPropagation();
         return;
