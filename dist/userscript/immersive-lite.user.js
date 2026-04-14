@@ -58,6 +58,7 @@
     settings: { ...DEFAULT },
     originalHTML: new WeakMap(),
     fab: null,
+    fabDot: null,
     panel: null,
     statusEl: null,
     runId: 0,
@@ -139,10 +140,14 @@
     state.statusEl.textContent = msg || "";
     state.statusEl.style.color = err ? "#d32f2f" : "#6f7f97";
   }
-  function setFabState(busy) {
+  function setFabState(mode) {
     if (!state.fab) return;
-    state.fab.textContent = busy ? "…" : "译";
-    state.fab.style.opacity = busy ? ".65" : "1";
+    const current = mode || "idle";
+    state.fab.textContent = current === "front" ? "…" : "译";
+    state.fab.style.opacity = current === "front" ? ".65" : "1";
+    if (state.fabDot) {
+      state.fabDot.style.display = current === "background" ? "block" : "none";
+    }
   }
 
   function hashText(str) {
@@ -458,7 +463,7 @@
     state.translating = true;
     state.runId += 1;
     const runId = state.runId;
-    setFabState(true);
+    setFabState("front");
 
     try {
       const nodes = getOrderedNodes();
@@ -479,6 +484,7 @@
       }
 
       setStatus("前段已完成，后台继续补全...");
+      setFabState("background");
       state.bgTimer = setTimeout(async () => {
         if (!state.translating || runId !== state.runId) return;
         let start = 0;
@@ -490,8 +496,9 @@
           await sleep(mode.backgroundDelay || BACKGROUND_DELAY);
         }
         if (runId === state.runId) {
+          state.bgTimer = 0;
           state.translating = false;
-          setFabState(false);
+          setFabState("idle");
           setStatus("");
         }
       }, 300);
@@ -503,7 +510,7 @@
       }
       if (runId === state.runId && !state.bgTimer) {
         state.translating = false;
-        setFabState(false);
+        setFabState("idle");
       }
     }
   }
@@ -520,7 +527,7 @@
       n.removeAttribute("data-iml-translated");
     }
     state.translated = false;
-    setFabState(false);
+    setFabState("idle");
     setStatus("已恢复原文");
   }
 
@@ -660,7 +667,11 @@
     const fab = document.createElement("button");
     fab.id = "iml-fab-main";
     fab.textContent = "译";
-    fab.style.cssText = "width:50px;height:50px;border:none;border-radius:25px;background:linear-gradient(135deg,#1677ff 0%,#4b9eff 100%);color:#fff;font-size:20px;font-weight:700;box-shadow:0 10px 24px rgba(22,119,255,.35),0 4px 10px rgba(0,0,0,.18);";
+    fab.style.cssText = "position:relative;width:50px;height:50px;border:none;border-radius:25px;background:linear-gradient(135deg,#1677ff 0%,#4b9eff 100%);color:#fff;font-size:20px;font-weight:700;box-shadow:0 10px 24px rgba(22,119,255,.35),0 4px 10px rgba(0,0,0,.18);";
+
+    const fabDot = document.createElement("span");
+    fabDot.style.cssText = "display:none;position:absolute;top:8px;right:8px;width:8px;height:8px;border-radius:50%;background:#ffd54f;box-shadow:0 0 0 2px rgba(255,255,255,.9);";
+    fab.appendChild(fabDot);
 
     let clickTimer = null;
     fab.addEventListener("click", (e) => {
@@ -672,6 +683,8 @@
     root.appendChild(fab);
     document.documentElement.appendChild(root);
     state.fab = fab;
+    state.fabDot = fabDot;
+    setFabState("idle");
   }
 
   state.settings = norm(await gmGet(KEY, DEFAULT));
