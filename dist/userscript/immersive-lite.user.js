@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Immersive Lite (Core)
 // @namespace    https://github.com/Aioneas/immersive-lite
-// @version      0.7.1
+// @version      0.7.3
 // @description  Core-only bilingual page translation with custom OpenAI-compatible API (no login/cloud/pricing).
 // @author       Aioneas
 // @match        *://*/*
@@ -43,6 +43,7 @@
     model: "gpt-5.4",
     targetLang: "zh-CN",
     displayMode: "bilingual",
+    speedMode: "fast",
     batchInterval: 120,
     batchSize: 8,
     batchLength: 1200,
@@ -129,10 +130,25 @@
       if (!t.baseUrl) t.baseUrl = "https://api.openai.com";
       if (!t.model) t.model = "gpt-5.4";
     }
-    t.batchInterval = Math.min(500, Math.max(0, Number(t.batchInterval || 120)));
-    t.batchSize = Math.min(20, Math.max(1, Number(t.batchSize || 8)));
-    t.batchLength = Math.min(4000, Math.max(200, Number(t.batchLength || 1200)));
-    t.concurrency = Math.min(32, Math.max(1, Number(t.concurrency || 12)));
+
+    const speed = ["balanced", "fast", "aggressive"].includes(t.speedMode) ? t.speedMode : "fast";
+    const PRESETS = {
+      balanced: { batchInterval: 160, batchSize: 8, batchLength: 1300, concurrency: 10 },
+      fast: { batchInterval: 120, batchSize: 8, batchLength: 1200, concurrency: 12 },
+      aggressive: { batchInterval: 70, batchSize: 6, batchLength: 900, concurrency: 16 },
+    };
+    const preset = PRESETS[speed];
+
+    t.speedMode = speed;
+    if (!("batchInterval" in t) || t.batchInterval == null || t.batchInterval === "") t.batchInterval = preset.batchInterval;
+    if (!("batchSize" in t) || t.batchSize == null || t.batchSize === "") t.batchSize = preset.batchSize;
+    if (!("batchLength" in t) || t.batchLength == null || t.batchLength === "") t.batchLength = preset.batchLength;
+    if (!("concurrency" in t) || t.concurrency == null || t.concurrency === "") t.concurrency = preset.concurrency;
+
+    t.batchInterval = Math.min(500, Math.max(0, Number(t.batchInterval || preset.batchInterval)));
+    t.batchSize = Math.min(20, Math.max(1, Number(t.batchSize || preset.batchSize)));
+    t.batchLength = Math.min(4000, Math.max(200, Number(t.batchLength || preset.batchLength)));
+    t.concurrency = Math.min(32, Math.max(1, Number(t.concurrency || preset.concurrency)));
     t.displayMode = t.displayMode === "translated" ? "translated" : "bilingual";
     t.useCache = t.useCache !== false;
     return t;
@@ -482,15 +498,15 @@
     const s = state.settings;
     const root = document.createElement("div");
     root.id = "iml-settings-overlay";
-    root.style.cssText = "position:fixed;inset:0;background:rgba(8,15,29,.46);backdrop-filter:blur(2px);z-index:2147483647;";
+    root.style.cssText = "position:fixed;inset:0;background:rgba(8,15,29,.46);backdrop-filter:blur(2px);z-index:2147483647;padding-top:env(safe-area-inset-top);";
 
     const panel = document.createElement("div");
-    panel.style.cssText = "position:absolute;left:0;right:0;bottom:0;background:linear-gradient(180deg,#fff 0%,#f8fbff 100%);border-radius:18px 18px 0 0;padding:14px 14px 26px;max-height:88vh;overflow:auto;font:14px -apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;box-shadow:0 -12px 30px rgba(0,0,0,.16);";
+    panel.style.cssText = "position:absolute;left:0;right:0;bottom:0;top:calc(env(safe-area-inset-top) + 8px);background:linear-gradient(180deg,#fff 0%,#f8fbff 100%);border-radius:18px 18px 0 0;padding:14px 14px calc(26px + env(safe-area-inset-bottom));overflow:auto;font:14px -apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;box-shadow:0 -12px 30px rgba(0,0,0,.16);";
     panel.innerHTML = `
       <div style="display:flex;justify-content:flex-start;align-items:center;margin-bottom:10px;">
         <div>
           <div style="font-size:16px;font-weight:700;color:#10213a;">Immersive Lite</div>
-          <div style="font-size:12px;color:#6f7f97;margin-top:2px;">批队列 + 缓存加速 v0.7</div>
+          <div style="font-size:12px;color:#6f7f97;margin-top:2px;">稳定核心 + 批队列缓存 + 简化速度模式 v0.7</div>
         </div>
       </div>
       <div style="display:grid;gap:10px;">
@@ -529,23 +545,16 @@
             </select>
           </div>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
-          <div>
-            <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">批时间窗 ms</label>
-            <input id="iml-interval" type="number" min="0" max="500" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;box-sizing:border-box" />
-          </div>
-          <div>
-            <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">并发数</label>
-            <input id="iml-concurrency" type="number" min="1" max="32" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;box-sizing:border-box" />
-          </div>
-          <div>
-            <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">批条数</label>
-            <input id="iml-batchsize" type="number" min="1" max="20" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;box-sizing:border-box" />
-          </div>
-          <div>
-            <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">批长度</label>
-            <input id="iml-batchlength" type="number" min="200" max="4000" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;box-sizing:border-box" />
-          </div>
+        <div>
+          <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">速度模式</label>
+          <select id="iml-speed" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;">
+            <option value="balanced">稳定</option>
+            <option value="fast">推荐</option>
+            <option value="aggressive">极速</option>
+          </select>
+        </div>
+        <div style="font-size:12px;color:#6f7f97;line-height:1.5;padding:10px 12px;background:#f4f8ff;border-radius:10px;">
+          稳定：更稳、更省；推荐：默认，适合大多数页面；极速：更快看到结果。其余复杂参数不需要你自己调。
         </div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px;">
@@ -562,15 +571,12 @@
     const $ = (id) => panel.querySelector("#" + id);
     const provider=$("iml-provider"), apiurl=$("iml-apiurl"), base=$("iml-base"), key=$("iml-key");
     const modelSelect=$("iml-model-select"), modelCustom=$("iml-model-custom");
-    const lang=$("iml-lang"), display=$("iml-display");
-    const interval=$("iml-interval"), concurrency=$("iml-concurrency"), batchsize=$("iml-batchsize"), batchlength=$("iml-batchlength");
+    const lang=$("iml-lang"), display=$("iml-display"), speed=$("iml-speed");
     const status=$("iml-status");
 
     state.statusEl = status; state.panel = root;
     provider.value=s.provider||"openai"; apiurl.value=s.apiUrl||""; base.value=s.baseUrl||"";
-    key.value=s.apiKey||""; lang.value=s.targetLang||"zh-CN"; display.value=s.displayMode||"bilingual";
-    interval.value=String(s.batchInterval||120); concurrency.value=String(s.concurrency||12);
-    batchsize.value=String(s.batchSize||8); batchlength.value=String(s.batchLength||1200);
+    key.value=s.apiKey||""; lang.value=s.targetLang||"zh-CN"; display.value=s.displayMode||"bilingual"; speed.value=s.speedMode||"fast";
     buildModelOptions(provider.value, modelSelect, modelCustom, s.model||"");
 
     provider.addEventListener("change", () => {
@@ -596,10 +602,7 @@
         model,
         targetLang: lang.value.trim() || "zh-CN",
         displayMode: display.value,
-        batchInterval: Number(interval.value || 120),
-        batchSize: Number(batchsize.value || 8),
-        batchLength: Number(batchlength.value || 1200),
-        concurrency: Number(concurrency.value || 12),
+        speedMode: speed.value,
       });
       await gmSet(KEY, state.settings);
       setStatus("设置已保存");
