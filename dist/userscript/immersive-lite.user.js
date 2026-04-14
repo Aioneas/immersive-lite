@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Immersive Lite (Core)
 // @namespace    https://github.com/Aioneas/immersive-lite
-// @version      0.9.2
+// @version      0.7.1
 // @description  Core-only bilingual page translation with custom OpenAI-compatible API (no login/cloud/pricing).
 // @author       Aioneas
 // @match        *://*/*
@@ -22,10 +22,8 @@
 (async function () {
   "use strict";
 
-  const KEY = "immersive_lite_v9";
-  const CACHE_KEY = "immersive_lite_cache_v3";
-  const CACHE_LIMIT = 1200;
-
+  const KEY = "immersive_lite_v7";
+  const CACHE_KEY = "immersive_lite_cache_v1";
   const MODEL_PRESETS = {
     openai: [
       "gpt-5.4","gpt-5.3","gpt-5.2","gpt-5.1","gpt-5",
@@ -45,7 +43,10 @@
     model: "gpt-5.4",
     targetLang: "zh-CN",
     displayMode: "bilingual",
-    speedMode: "fast",
+    batchInterval: 120,
+    batchSize: 8,
+    batchLength: 1200,
+    concurrency: 12,
     useCache: true,
   };
 
@@ -55,15 +56,12 @@
     settings: { ...DEFAULT },
     originalHTML: new WeakMap(),
     fab: null,
-    fabText: null,
     panel: null,
     statusEl: null,
     runId: 0,
     inflight: new Map(),
     batchQueue: null,
-    cacheMap: {},
-    cacheDirty: false,
-    cacheFlushTimer: 0,
+    cache: {},
   };
 
   function esc(s) {
@@ -96,7 +94,7 @@
     const current = await gmGet(KEY, null);
     if (current && typeof current === "object") return norm({ ...DEFAULT, ...current });
 
-    const legacyKeys = ["immersive_lite_v8", "immersive_lite_v7", "immersive_lite_v6", "immersive_lite_v3", "immersive_lite_core_settings_v3"];
+    const legacyKeys = ["immersive_lite_v9", "immersive_lite_v8", "immersive_lite_v6", "immersive_lite_v3", "immersive_lite_core_settings_v3"];
     for (const legacyKey of legacyKeys) {
       const legacy = await gmGet(legacyKey, null);
       if (legacy && typeof legacy === "object") {
@@ -131,19 +129,13 @@
       if (!t.baseUrl) t.baseUrl = "https://api.openai.com";
       if (!t.model) t.model = "gpt-5.4";
     }
+    t.batchInterval = Math.min(500, Math.max(0, Number(t.batchInterval || 120)));
+    t.batchSize = Math.min(20, Math.max(1, Number(t.batchSize || 8)));
+    t.batchLength = Math.min(4000, Math.max(200, Number(t.batchLength || 1200)));
+    t.concurrency = Math.min(32, Math.max(1, Number(t.concurrency || 12)));
     t.displayMode = t.displayMode === "translated" ? "translated" : "bilingual";
-    t.speedMode = ["balanced", "fast", "aggressive"].includes(t.speedMode) ? t.speedMode : "fast";
     t.useCache = t.useCache !== false;
     return t;
-  }
-
-  function getConfigError(settings) {
-    const s = norm(settings || state.settings || DEFAULT);
-    const url = buildApiUrl(s);
-    if (!url) return "请先设置 API 地址";
-    if (!s.apiKey && s.provider !== "custom") return "请先设置 API Key";
-    if (!s.model) return "请先设置模型";
-    return "";
   }
 
   function setStatus(msg, err) {
@@ -151,19 +143,10 @@
     state.statusEl.textContent = msg || "";
     state.statusEl.style.color = err ? "#d32f2f" : "#6f7f97";
   }
-  function setFabState(mode) {
+  function setFabState(busy) {
     if (!state.fab) return;
-    const current = mode || "idle";
-    if (state.fabText) {
-      state.fabText.textContent = current === "busy" ? "" : (current === "done" ? "✓" : "译");
-    }
-    if (current === "busy") {
-      state.fab.style.opacity = ".18";
-      state.fab.style.pointerEvents = "auto";
-    } else {
-      state.fab.style.opacity = "1";
-      state.fab.style.pointerEvents = "auto";
-    }
+    state.fab.textContent = busy ? "…" : "译";
+    state.fab.style.opacity = busy ? ".65" : "1";
   }
 
   function hashText(str) {
@@ -180,37 +163,16 @@
   }
   function getCache(text) {
     if (!state.settings.useCache) return null;
-    const entry = state.cacheMap[makeCacheKey(text)];
-    if (!entry || !entry.v) return null;
-    entry.at = Date.now();
-    state.cacheDirty = true;
-    scheduleCacheFlush();
-    return entry.v;
+    return state.cache[makeCacheKey(text)] || null;
   }
-  function scheduleCacheFlush() {
-    if (!state.cacheDirty) return;
-    if (state.cacheFlushTimer) return;
-    state.cacheFlushTimer = setTimeout(async () => {
-      state.cacheFlushTimer = 0;
-      if (!state.cacheDirty) return;
-      state.cacheDirty = false;
-      await gmSet(CACHE_KEY, state.cacheMap);
-    }, 1200);
-  }
-  function pruneCache() {
-    const entries = Object.entries(state.cacheMap);
-    if (entries.length <= CACHE_LIMIT) return;
-    entries.sort((a, b) => (a[1]?.at || 0) - (b[1]?.at || 0));
-    const removeCount = entries.length - CACHE_LIMIT;
-    for (let i = 0; i < removeCount; i++) delete state.cacheMap[entries[i][0]];
-  }
-  function putCache(text, translated) {
+  async function putCache(text, translated) {
     if (!state.settings.useCache) return;
-    if (!translated || !String(translated).trim()) return;
-    state.cacheMap[makeCacheKey(text)] = { v: translated, at: Date.now() };
-    pruneCache();
-    state.cacheDirty = true;
-    scheduleCacheFlush();
+    state.cache[makeCacheKey(text)] = translated;
+    const keys = Object.keys(state.cache);
+    if (keys.length > 1200) {
+      for (const k of keys.slice(0, keys.length - 1000)) delete state.cache[k];
+    }
+    await gmSet(CACHE_KEY, state.cache);
   }
 
   function pickNodes() {
@@ -336,13 +298,12 @@
     const p = (async () => {
       if (state.batchQueue) {
         const res = await state.batchQueue.addTask(text);
-        const tr = res || "";
-        putCache(text, tr);
-        return tr;
+        await putCache(text, res || "");
+        return res || "";
       }
       const arr = await translateMany([text]);
       const tr = String(arr[0] || "");
-      putCache(text, tr);
+      await putCache(text, tr);
       return tr;
     })();
 
@@ -360,7 +321,9 @@
     let timer = null;
 
     const schedule = () => {
-      if (!isProcessing && !timer && queue.length > 0) timer = setTimeout(processQueue, opts.batchInterval);
+      if (!isProcessing && !timer && queue.length > 0) {
+        timer = setTimeout(processQueue, opts.batchInterval);
+      }
     };
 
     const processQueue = async () => {
@@ -421,113 +384,71 @@
     node.setAttribute("data-iml-translated", "1");
   }
 
-  const FLOW_PRESETS = {
-    balanced: { batchInterval: 140, batchSize: 8, batchLength: 1300, concurrency: 10, statusThrottleMs: 220 },
-    fast: { batchInterval: 80, batchSize: 6, batchLength: 1000, concurrency: 14, statusThrottleMs: 180 },
-    aggressive: { batchInterval: 40, batchSize: 6, batchLength: 900, concurrency: 18, statusThrottleMs: 140 },
-  };
-
-  function getFlowConfig() {
-    const mode = state.settings.speedMode || "fast";
-    return FLOW_PRESETS[mode] || FLOW_PRESETS.fast;
-  }
-
-  function getOrderedNodes() {
-    const nodes = pickNodes();
-    const h = window.innerHeight || 800;
-    nodes.sort((a, b) => {
-      const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
-      const aIn = ra.bottom > 0 && ra.top < h, bIn = rb.bottom > 0 && rb.top < h;
-      if (aIn && !bIn) return -1;
-      if (!aIn && bIn) return 1;
-      return ra.top - rb.top;
-    });
-    return nodes;
-  }
-
-  async function translateNodes(nodes, runId, statusPrefix) {
-    const flow = getFlowConfig();
-    if (state.batchQueue) state.batchQueue.destroy();
-    state.batchQueue = createBatchQueue(translateMany, {
-      batchInterval: flow.batchInterval,
-      batchSize: flow.batchSize,
-      batchLength: flow.batchLength,
-    });
-
-    const total = nodes.length;
-    let done = 0;
-    let failed = 0;
-    let cursor = 0;
-    let lastStatusAt = 0;
-
-    async function worker() {
-      while (true) {
-        if (!state.translating || runId !== state.runId) return;
-        const idx = cursor++;
-        if (idx >= nodes.length) return;
-        const node = nodes[idx];
-        const orig = (node.innerText || "").trim();
-        try {
-          const tr = await translateText(orig);
-          if (!state.translating || runId !== state.runId) return;
-          if (node && node.isConnected) applyTranslation(node, orig, tr);
-          done++;
-          const now = Date.now();
-          if (now - lastStatusAt > flow.statusThrottleMs || done === total) {
-            setStatus(`${statusPrefix} ${done}/${total}`);
-            lastStatusAt = now;
-          }
-        } catch (e) {
-          failed++;
-          console.error("[immersive-lite] text err", e);
-        }
-      }
-    }
-
-    const workerCount = Math.min(flow.concurrency, nodes.length || 1);
-    await Promise.all(Array.from({ length: workerCount }, () => worker()));
-    if (state.batchQueue) { state.batchQueue.destroy(); state.batchQueue = null; }
-    return { done, failed, total };
-  }
-
   async function translatePage() {
     if (state.translating || state.translated) return;
-
-    const configError = getConfigError(state.settings);
-    if (configError) {
-      setStatus(configError, true);
-      setFabState("idle");
-      return;
-    }
-
     state.translating = true;
     state.runId += 1;
     const runId = state.runId;
-    setFabState("busy");
+    setFabState(true);
 
     try {
-      const nodes = getOrderedNodes();
+      const s = norm(state.settings);
+      const nodes = pickNodes();
       if (!nodes.length) { setStatus("没找到可翻译文本", true); return; }
 
-      setStatus(`流式翻译 0/${nodes.length}`);
-      const res = await translateNodes(nodes, runId, "流式翻译");
-      if (!state.translating || runId !== state.runId) return;
-      state.translated = res.done > 0;
-      if (res.failed > 0) setStatus(`完成 ${res.done}/${res.total}，${res.failed} 段失败`, true);
-      else setStatus("");
+      const h = window.innerHeight || 800;
+      nodes.sort((a, b) => {
+        const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+        const aIn = ra.bottom > 0 && ra.top < h, bIn = rb.bottom > 0 && rb.top < h;
+        if (aIn && !bIn) return -1;
+        if (!aIn && bIn) return 1;
+        return ra.top - rb.top;
+      });
 
-      setFabState("done");
-      setTimeout(() => {
-        if (runId === state.runId && !state.translating) setFabState("idle");
-      }, 1200);
+      if (state.batchQueue) state.batchQueue.destroy();
+      state.batchQueue = createBatchQueue(translateMany, {
+        batchInterval: s.batchInterval,
+        batchSize: s.batchSize,
+        batchLength: s.batchLength,
+      });
+
+      const total = nodes.length;
+      let done = 0, failed = 0;
+      let cursor = 0;
+      setStatus(`翻译中 0/${total}`);
+
+      async function worker() {
+        while (true) {
+          if (!state.translating || runId !== state.runId) return;
+          const idx = cursor++;
+          if (idx >= nodes.length) return;
+          const node = nodes[idx];
+          const orig = (node.innerText || "").trim();
+          try {
+            const tr = await translateText(orig);
+            if (!state.translating || runId !== state.runId) return;
+            if (node && node.isConnected) applyTranslation(node, orig, tr);
+            done++;
+            setStatus(`翻译中 ${done}/${total}`);
+          } catch (e) {
+            failed++;
+            console.error("[immersive-lite] text err", e);
+          }
+        }
+      }
+
+      const workerCount = Math.min(s.concurrency, nodes.length);
+      await Promise.all(Array.from({ length: workerCount }, () => worker()));
+      if (runId !== state.runId) return;
+      state.translated = done > 0;
+      setStatus(failed > 0 ? `完成 ${done}/${total}，${failed} 段失败` : "");
     } catch (e) {
-      const msg = e?.message || String(e || "");
-      setStatus("翻译失败: " + msg, true);
-      setFabState("idle");
+      setStatus("翻译失败: " + (e?.message || e), true);
     } finally {
+      if (state.batchQueue) { state.batchQueue.destroy(); state.batchQueue = null; }
       if (runId === state.runId) {
         state.translating = false;
-        if (state.batchQueue) { state.batchQueue.destroy(); state.batchQueue = null; }
+        setFabState(false);
       }
     }
   }
@@ -543,7 +464,7 @@
       n.removeAttribute("data-iml-translated");
     }
     state.translated = false;
-    setFabState("idle");
+    setFabState(false);
     setStatus("已恢复原文");
   }
 
@@ -561,15 +482,15 @@
     const s = state.settings;
     const root = document.createElement("div");
     root.id = "iml-settings-overlay";
-    root.style.cssText = "position:fixed;inset:0;background:rgba(8,15,29,.46);backdrop-filter:blur(2px);z-index:2147483647;padding-top:env(safe-area-inset-top);";
+    root.style.cssText = "position:fixed;inset:0;background:rgba(8,15,29,.46);backdrop-filter:blur(2px);z-index:2147483647;";
 
     const panel = document.createElement("div");
-    panel.style.cssText = "position:absolute;left:0;right:0;bottom:0;top:calc(env(safe-area-inset-top) + 8px);background:linear-gradient(180deg,#fff 0%,#f8fbff 100%);border-radius:18px 18px 0 0;padding:14px 14px calc(26px + env(safe-area-inset-bottom));overflow:auto;font:14px -apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;box-shadow:0 -12px 30px rgba(0,0,0,.16);";
+    panel.style.cssText = "position:absolute;left:0;right:0;bottom:0;background:linear-gradient(180deg,#fff 0%,#f8fbff 100%);border-radius:18px 18px 0 0;padding:14px 14px 26px;max-height:88vh;overflow:auto;font:14px -apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;box-shadow:0 -12px 30px rgba(0,0,0,.16);";
     panel.innerHTML = `
       <div style="display:flex;justify-content:flex-start;align-items:center;margin-bottom:10px;">
         <div>
           <div style="font-size:16px;font-weight:700;color:#10213a;">Immersive Lite</div>
-          <div style="font-size:12px;color:#6f7f97;margin-top:2px;">单一路径流式翻译 + 智能缓存 + 简化速度模式 v0.9</div>
+          <div style="font-size:12px;color:#6f7f97;margin-top:2px;">批队列 + 缓存加速 v0.7</div>
         </div>
       </div>
       <div style="display:grid;gap:10px;">
@@ -608,16 +529,23 @@
             </select>
           </div>
         </div>
-        <div>
-          <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">速度模式</label>
-          <select id="iml-speed" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;">
-            <option value="balanced">稳定</option>
-            <option value="fast">推荐</option>
-            <option value="aggressive">极速</option>
-          </select>
-        </div>
-        <div style="font-size:12px;color:#6f7f97;line-height:1.5;padding:10px 12px;background:#f4f8ff;border-radius:10px;">
-          速度模式是给普通用户的简化开关：稳定=更稳，推荐=默认，极速=更快；其余复杂参数不用你手动调。
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+          <div>
+            <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">批时间窗 ms</label>
+            <input id="iml-interval" type="number" min="0" max="500" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;box-sizing:border-box" />
+          </div>
+          <div>
+            <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">并发数</label>
+            <input id="iml-concurrency" type="number" min="1" max="32" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;box-sizing:border-box" />
+          </div>
+          <div>
+            <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">批条数</label>
+            <input id="iml-batchsize" type="number" min="1" max="20" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;box-sizing:border-box" />
+          </div>
+          <div>
+            <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">批长度</label>
+            <input id="iml-batchlength" type="number" min="200" max="4000" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;box-sizing:border-box" />
+          </div>
         </div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px;">
@@ -634,12 +562,15 @@
     const $ = (id) => panel.querySelector("#" + id);
     const provider=$("iml-provider"), apiurl=$("iml-apiurl"), base=$("iml-base"), key=$("iml-key");
     const modelSelect=$("iml-model-select"), modelCustom=$("iml-model-custom");
-    const lang=$("iml-lang"), display=$("iml-display"), speed=$("iml-speed");
+    const lang=$("iml-lang"), display=$("iml-display");
+    const interval=$("iml-interval"), concurrency=$("iml-concurrency"), batchsize=$("iml-batchsize"), batchlength=$("iml-batchlength");
     const status=$("iml-status");
 
     state.statusEl = status; state.panel = root;
     provider.value=s.provider||"openai"; apiurl.value=s.apiUrl||""; base.value=s.baseUrl||"";
-    key.value=s.apiKey||""; lang.value=s.targetLang||"zh-CN"; display.value=s.displayMode||"bilingual"; speed.value=s.speedMode||"fast";
+    key.value=s.apiKey||""; lang.value=s.targetLang||"zh-CN"; display.value=s.displayMode||"bilingual";
+    interval.value=String(s.batchInterval||120); concurrency.value=String(s.concurrency||12);
+    batchsize.value=String(s.batchSize||8); batchlength.value=String(s.batchLength||1200);
     buildModelOptions(provider.value, modelSelect, modelCustom, s.model||"");
 
     provider.addEventListener("change", () => {
@@ -665,7 +596,10 @@
         model,
         targetLang: lang.value.trim() || "zh-CN",
         displayMode: display.value,
-        speedMode: speed.value,
+        batchInterval: Number(interval.value || 120),
+        batchSize: Number(batchsize.value || 8),
+        batchLength: Number(batchlength.value || 1200),
+        concurrency: Number(concurrency.value || 12),
       });
       await gmSet(KEY, state.settings);
       setStatus("设置已保存");
@@ -682,12 +616,8 @@
 
     const fab = document.createElement("button");
     fab.id = "iml-fab-main";
-    fab.style.cssText = "position:relative;width:50px;height:50px;border:none;border-radius:25px;background:linear-gradient(135deg,#1677ff 0%,#4b9eff 100%);color:#fff;font-size:20px;font-weight:700;box-shadow:0 10px 24px rgba(22,119,255,.35),0 4px 10px rgba(0,0,0,.18);";
-
-    const fabText = document.createElement("span");
-    fabText.textContent = "译";
-    fabText.style.cssText = "position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);line-height:1;";
-    fab.appendChild(fabText);
+    fab.textContent = "译";
+    fab.style.cssText = "width:50px;height:50px;border:none;border-radius:25px;background:linear-gradient(135deg,#1677ff 0%,#4b9eff 100%);color:#fff;font-size:20px;font-weight:700;box-shadow:0 10px 24px rgba(22,119,255,.35),0 4px 10px rgba(0,0,0,.18);";
 
     let clickTimer = null;
     fab.addEventListener("click", (e) => {
@@ -699,13 +629,10 @@
     root.appendChild(fab);
     document.documentElement.appendChild(root);
     state.fab = fab;
-    state.fabText = fabText;
-    setFabState("idle");
   }
 
   state.settings = await loadSettingsWithMigration();
-  state.cacheMap = (await gmGet(CACHE_KEY, {})) || {};
-  pruneCache();
+  state.cache = (await gmGet(CACHE_KEY, {})) || {};
   mountUI();
 
   if (typeof GM_registerMenuCommand !== "undefined") {
