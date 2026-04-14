@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Immersive Lite (Core)
 // @namespace    https://github.com/Aioneas/immersive-lite
-// @version      0.8.2
+// @version      0.8.3
 // @description  Core-only bilingual page translation with custom OpenAI-compatible API (no login/cloud/pricing).
 // @author       Aioneas
 // @match        *://*/*
@@ -248,6 +248,18 @@
     if (!state.fab || !state.fabPos) return;
     applyFabPosition(state.fabPos, { reveal: false });
     state.fab.style.opacity = state.translating ? ".26" : ".66";
+  }
+
+  function setFabDraggingVisual(active) {
+    if (!state.fab) return;
+    state.fab.style.transition = active
+      ? "opacity .12s ease"
+      : "opacity .18s ease, transform .18s ease, background-color .18s ease, left .18s ease";
+    state.fab.style.backdropFilter = active ? "blur(6px)" : "blur(10px)";
+    state.fab.style.webkitBackdropFilter = active ? "blur(6px)" : "blur(10px)";
+    state.fab.style.boxShadow = active
+      ? "0 3px 10px rgba(0,0,0,.10),0 1px 3px rgba(0,0,0,.08)"
+      : "0 6px 16px rgba(0,0,0,.12),0 2px 6px rgba(0,0,0,.09)";
   }
 
   function hashText(str) {
@@ -747,7 +759,7 @@
     const fab = document.createElement("button");
     fab.id = "iml-fab-main";
     fab.textContent = "译";
-    fab.style.cssText = "position:fixed;width:50px;height:50px;border:none;border-radius:25px;background:rgba(88,96,110,.64);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);color:#fff;font-size:20px;font-weight:700;box-shadow:0 6px 16px rgba(0,0,0,.12),0 2px 6px rgba(0,0,0,.09);touch-action:none;user-select:none;-webkit-user-select:none;pointer-events:auto;transition:opacity .18s ease, transform .18s ease, background-color .18s ease, left .18s ease;";
+    fab.style.cssText = "position:fixed;width:50px;height:50px;border:none;border-radius:25px;background:rgba(88,96,110,.64);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);color:#fff;font-size:20px;font-weight:700;box-shadow:0 6px 16px rgba(0,0,0,.12),0 2px 6px rgba(0,0,0,.09);touch-action:none;user-select:none;-webkit-user-select:none;pointer-events:auto;transition:opacity .18s ease, transform .18s ease, background-color .18s ease, left .18s ease;will-change:left,top,opacity;";
 
     let clickTimer = null;
     let suppressClickUntil = 0;
@@ -769,6 +781,7 @@
       startX = e.clientX;
       startY = e.clientY;
       revealFab();
+      setFabDraggingVisual(true);
       const rect = fab.getBoundingClientRect();
       originLeft = rect.left;
       originTop = rect.top;
@@ -794,6 +807,7 @@
       if (pointerId !== null && e.pointerId !== pointerId) return;
       const wasMoved = moved;
       dragging = false;
+      setFabDraggingVisual(false);
       if (fab.releasePointerCapture && pointerId !== null) {
         try { fab.releasePointerCapture(pointerId); } catch {}
       }
