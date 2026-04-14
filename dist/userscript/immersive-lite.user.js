@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Immersive Lite (Core)
 // @namespace    https://github.com/Aioneas/immersive-lite
-// @version      0.7.4
+// @version      0.7.5
 // @description  Core-only bilingual page translation with custom OpenAI-compatible API (no login/cloud/pricing).
 // @author       Aioneas
 // @match        *://*/*
@@ -24,6 +24,7 @@
 
   const KEY = "immersive_lite_v7";
   const CACHE_KEY = "immersive_lite_cache_v1";
+  const FAB_POS_KEY = "immersive_lite_fab_pos_v1";
   const MODEL_PRESETS = {
     openai: [
       "gpt-5.4","gpt-5.3","gpt-5.2","gpt-5.1","gpt-5",
@@ -63,6 +64,7 @@
     inflight: new Map(),
     batchQueue: null,
     cache: {},
+    fabPos: null,
   };
 
   function esc(s) {
@@ -163,6 +165,34 @@
     if (!state.fab) return;
     state.fab.textContent = busy ? "…" : "译";
     state.fab.style.opacity = busy ? ".65" : "1";
+  }
+
+  function clampFabPosition(left, top) {
+    const size = 50;
+    const vw = window.innerWidth || document.documentElement.clientWidth || 390;
+    const vh = window.innerHeight || document.documentElement.clientHeight || 844;
+    const minLeft = 6;
+    const minTop = 6 + (window.visualViewport ? Math.max(0, window.visualViewport.offsetTop || 0) : 0);
+    const maxLeft = Math.max(minLeft, vw - size - 6);
+    const maxTop = Math.max(minTop, vh - size - 6);
+    return {
+      left: Math.max(minLeft, Math.min(left, maxLeft)),
+      top: Math.max(minTop, Math.min(top, maxTop)),
+    };
+  }
+
+  function applyFabPosition(pos) {
+    if (!state.fab || !pos) return;
+    const p = clampFabPosition(Number(pos.left || 0), Number(pos.top || 0));
+    state.fab.style.left = p.left + "px";
+    state.fab.style.top = p.top + "px";
+    state.fab.style.right = "auto";
+    state.fab.style.bottom = "auto";
+  }
+
+  async function saveFabPosition(pos) {
+    state.fabPos = clampFabPosition(Number(pos.left || 0), Number(pos.top || 0));
+    await gmSet(FAB_POS_KEY, state.fabPos);
   }
 
   function hashText(str) {
@@ -657,15 +687,84 @@
     if (document.getElementById("iml-ui-root")) return;
     const root = document.createElement("div");
     root.id = "iml-ui-root";
-    root.style.cssText = "position:fixed;right:14px;bottom:22px;z-index:2147483646;";
+    root.style.cssText = "position:fixed;z-index:2147483646;";
 
     const fab = document.createElement("button");
     fab.id = "iml-fab-main";
     fab.textContent = "译";
-    fab.style.cssText = "width:50px;height:50px;border:none;border-radius:25px;background:linear-gradient(135deg,#1677ff 0%,#4b9eff 100%);color:#fff;font-size:20px;font-weight:700;box-shadow:0 10px 24px rgba(22,119,255,.35),0 4px 10px rgba(0,0,0,.18);";
+    fab.style.cssText = "position:fixed;width:50px;height:50px;border:none;border-radius:25px;background:linear-gradient(135deg,#1677ff 0%,#4b9eff 100%);color:#fff;font-size:20px;font-weight:700;box-shadow:0 10px 24px rgba(22,119,255,.35),0 4px 10px rgba(0,0,0,.18);touch-action:none;user-select:none;-webkit-user-select:none;";
+
+    const defaultPos = clampFabPosition((window.innerWidth || 390) - 64, (window.innerHeight || 844) - 94);
+    applyFabPosition(state.fabPos || defaultPos);
 
     let clickTimer = null;
+    let dragging = false;
+    let moved = false;
+    let startX = 0;
+    let startY = 0;
+    let originLeft = 0;
+    let originTop = 0;
+
+    const getPoint = (e) => {
+      if (e.touches && e.touches[0]) return { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      if (e.changedTouches && e.changedTouches[0]) return { x: e.changedTouches[0].clientX, y: e.changedTouches[0].clientY };
+      return { x: e.clientX, y: e.clientY };
+    };
+
+    const onMove = (e) => {
+      if (!dragging) return;
+      const p = getPoint(e);
+      const dx = p.x - startX;
+      const dy = p.y - startY;
+      if (!moved && (Math.abs(dx) > 6 || Math.abs(dy) > 6)) moved = true;
+      if (!moved) return;
+      if (e.cancelable) e.preventDefault();
+      applyFabPosition({ left: originLeft + dx, top: originTop + dy });
+    };
+
+    const onEnd = async (e) => {
+      if (!dragging) return;
+      dragging = false;
+      document.removeEventListener("mousemove", onMove, true);
+      document.removeEventListener("mouseup", onEnd, true);
+      document.removeEventListener("touchmove", onMove, true);
+      document.removeEventListener("touchend", onEnd, true);
+
+      if (moved) {
+        const rect = fab.getBoundingClientRect();
+        await saveFabPosition({ left: rect.left, top: rect.top });
+        moved = false;
+        if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
+        if (e.cancelable) e.preventDefault();
+        return;
+      }
+    };
+
+    const onStart = (e) => {
+      if (e.type === "mousedown" && e.button !== 0) return;
+      const p = getPoint(e);
+      const rect = fab.getBoundingClientRect();
+      dragging = true;
+      moved = false;
+      startX = p.x;
+      startY = p.y;
+      originLeft = rect.left;
+      originTop = rect.top;
+      document.addEventListener("mousemove", onMove, true);
+      document.addEventListener("mouseup", onEnd, true);
+      document.addEventListener("touchmove", onMove, { passive: false, capture: true });
+      document.addEventListener("touchend", onEnd, true);
+    };
+
+    fab.addEventListener("mousedown", onStart);
+    fab.addEventListener("touchstart", onStart, { passive: true });
+
     fab.addEventListener("click", (e) => {
+      if (moved) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
       e.stopPropagation();
       if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; openSettings(); return; }
       clickTimer = setTimeout(async () => { clickTimer = null; await translatePage(); }, 280);
@@ -678,6 +777,7 @@
 
   state.settings = await loadSettingsWithMigration();
   state.cache = (await gmGet(CACHE_KEY, {})) || {};
+  state.fabPos = await gmGet(FAB_POS_KEY, null);
   mountUI();
 
   if (typeof GM_registerMenuCommand !== "undefined") {
