@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Immersive Lite (Core)
 // @namespace    https://github.com/Aioneas/immersive-lite
-// @version      0.7.5
+// @version      0.7.6
 // @description  Core-only bilingual page translation with custom OpenAI-compatible API (no login/cloud/pricing).
 // @author       Aioneas
 // @match        *://*/*
@@ -694,73 +694,69 @@
     fab.textContent = "译";
     fab.style.cssText = "position:fixed;width:50px;height:50px;border:none;border-radius:25px;background:linear-gradient(135deg,#1677ff 0%,#4b9eff 100%);color:#fff;font-size:20px;font-weight:700;box-shadow:0 10px 24px rgba(22,119,255,.35),0 4px 10px rgba(0,0,0,.18);touch-action:none;user-select:none;-webkit-user-select:none;";
 
-    const defaultPos = clampFabPosition((window.innerWidth || 390) - 64, (window.innerHeight || 844) - 94);
-    applyFabPosition(state.fabPos || defaultPos);
-
     let clickTimer = null;
-    let dragging = false;
-    let moved = false;
+    let pointerId = null;
     let startX = 0;
     let startY = 0;
     let originLeft = 0;
     let originTop = 0;
+    let moved = false;
+    let dragging = false;
 
-    const getPoint = (e) => {
-      if (e.touches && e.touches[0]) return { x: e.touches[0].clientX, y: e.touches[0].clientY };
-      if (e.changedTouches && e.changedTouches[0]) return { x: e.changedTouches[0].clientX, y: e.changedTouches[0].clientY };
-      return { x: e.clientX, y: e.clientY };
+    const defaultPos = clampFabPosition((window.innerWidth || 390) - 64, (window.innerHeight || 844) - 94);
+
+    const onPointerDown = (e) => {
+      if (e.button != null && e.button !== 0) return;
+      pointerId = e.pointerId;
+      dragging = true;
+      moved = false;
+      startX = e.clientX;
+      startY = e.clientY;
+      const rect = fab.getBoundingClientRect();
+      originLeft = rect.left;
+      originTop = rect.top;
+      if (fab.setPointerCapture) {
+        try { fab.setPointerCapture(pointerId); } catch {}
+      }
+      e.stopPropagation();
     };
 
-    const onMove = (e) => {
+    const onPointerMove = (e) => {
       if (!dragging) return;
-      const p = getPoint(e);
-      const dx = p.x - startX;
-      const dy = p.y - startY;
+      if (pointerId !== null && e.pointerId !== pointerId) return;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
       if (!moved && (Math.abs(dx) > 6 || Math.abs(dy) > 6)) moved = true;
       if (!moved) return;
-      if (e.cancelable) e.preventDefault();
+      e.preventDefault();
       applyFabPosition({ left: originLeft + dx, top: originTop + dy });
     };
 
-    const onEnd = async (e) => {
+    const onPointerUp = async (e) => {
       if (!dragging) return;
+      if (pointerId !== null && e.pointerId !== pointerId) return;
       dragging = false;
-      document.removeEventListener("mousemove", onMove, true);
-      document.removeEventListener("mouseup", onEnd, true);
-      document.removeEventListener("touchmove", onMove, true);
-      document.removeEventListener("touchend", onEnd, true);
+      if (fab.releasePointerCapture && pointerId !== null) {
+        try { fab.releasePointerCapture(pointerId); } catch {}
+      }
+      pointerId = null;
 
       if (moved) {
         const rect = fab.getBoundingClientRect();
         await saveFabPosition({ left: rect.left, top: rect.top });
-        moved = false;
         if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
-        if (e.cancelable) e.preventDefault();
-        return;
+        moved = false;
+        e.preventDefault();
       }
     };
 
-    const onStart = (e) => {
-      if (e.type === "mousedown" && e.button !== 0) return;
-      const p = getPoint(e);
-      const rect = fab.getBoundingClientRect();
-      dragging = true;
-      moved = false;
-      startX = p.x;
-      startY = p.y;
-      originLeft = rect.left;
-      originTop = rect.top;
-      document.addEventListener("mousemove", onMove, true);
-      document.addEventListener("mouseup", onEnd, true);
-      document.addEventListener("touchmove", onMove, { passive: false, capture: true });
-      document.addEventListener("touchend", onEnd, true);
-    };
-
-    fab.addEventListener("mousedown", onStart);
-    fab.addEventListener("touchstart", onStart, { passive: true });
+    fab.addEventListener("pointerdown", onPointerDown);
+    fab.addEventListener("pointermove", onPointerMove);
+    fab.addEventListener("pointerup", onPointerUp);
+    fab.addEventListener("pointercancel", onPointerUp);
 
     fab.addEventListener("click", (e) => {
-      if (moved) {
+      if (moved || dragging) {
         e.preventDefault();
         e.stopPropagation();
         return;
@@ -773,6 +769,7 @@
     root.appendChild(fab);
     document.documentElement.appendChild(root);
     state.fab = fab;
+    applyFabPosition(state.fabPos || defaultPos);
   }
 
   state.settings = await loadSettingsWithMigration();
