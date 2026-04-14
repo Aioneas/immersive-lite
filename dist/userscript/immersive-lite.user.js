@@ -32,8 +32,8 @@
     targetLang: navigator.language || "zh-CN",
     fallbackService: "none",
     customHeadersText: "",
-    batchSize: 8,
-    maxRetries: 2,
+    batchSize: 24,
+    maxRetries: 1,
   };
 
   const state = {
@@ -105,8 +105,8 @@
       if (!t.model) t.model = "gpt-4o-mini";
     }
 
-    t.batchSize = Math.min(20, Math.max(1, Number(t.batchSize || 8)));
-    t.maxRetries = Math.min(5, Math.max(0, Number(t.maxRetries || 2)));
+    t.batchSize = Math.min(80, Math.max(1, Number(t.batchSize || 24)));
+    t.maxRetries = Math.min(3, Math.max(0, Number(t.maxRetries || 1)));
     return t;
   }
 
@@ -302,25 +302,37 @@
       }
 
       const texts = nodes.map((n) => (n.innerText || "").trim());
-      const batchSize = Math.max(1, Number(state.settings.batchSize || 8));
+      const batchSize = Math.max(1, Number(state.settings.batchSize || 24));
+      const groups = [];
+      for (let i = 0; i < texts.length; i += batchSize) {
+        groups.push({ subTexts: texts.slice(i, i + batchSize), subNodes: nodes.slice(i, i + batchSize) });
+      }
+
+      const maxConcurrency = Math.min(6, groups.length || 1);
+      let cursor = 0;
       let done = 0;
 
-      for (let i = 0; i < texts.length; i += batchSize) {
-        const subTexts = texts.slice(i, i + batchSize);
-        const subNodes = nodes.slice(i, i + batchSize);
-        const translated = await translateBatch(subTexts);
-
-        for (let j = 0; j < subNodes.length; j++) {
-          const node = subNodes[j];
-          const orig = subTexts[j] || "";
-          const tr = translated[j] || "";
-          if (!state.originalHTML.has(node)) state.originalHTML.set(node, node.innerHTML);
-          node.innerHTML = `<span style=\"display:block;opacity:.95\">${esc(orig)}</span><span style=\"display:block;opacity:.72;color:#555;font-size:.92em\">${esc(tr)}</span>`;
-          node.setAttribute("data-iml-translated", "1");
-          done += 1;
+      async function worker() {
+        while (cursor < groups.length) {
+          const idx = cursor++;
+          const g = groups[idx];
+          const translated = await translateBatch(g.subTexts);
+          for (let j = 0; j < g.subNodes.length; j++) {
+            const node = g.subNodes[j];
+            const orig = g.subTexts[j] || "";
+            const tr = translated[j] || "";
+            if (!state.originalHTML.has(node)) state.originalHTML.set(node, node.innerHTML);
+            node.innerHTML = `<span style=\"display:block;opacity:.95\">${esc(orig)}</span><span style=\"display:block;opacity:.72;color:#555;font-size:.92em\">${esc(tr)}</span>`;
+            node.setAttribute("data-iml-translated", "1");
+            done += 1;
+          }
+          if (done % 20 === 0 || done === texts.length) {
+            toast(`翻译中 ${done}/${texts.length}` , 180);
+          }
         }
-        toast(`翻译中 ${done}/${texts.length}` , 700);
       }
+
+      await Promise.all(Array.from({ length: maxConcurrency }, () => worker()));
 
       state.translated = true;
       toast("翻译完成");
@@ -388,7 +400,7 @@
       <div style="display:flex;gap:8px;">
         <div style="flex:1;">
           <label>每批段落数</label>
-          <input id="iml-batch" type="number" min="1" max="20" style="width:100%;margin:4px 0 8px;padding:8px;box-sizing:border-box" />
+          <input id="iml-batch" type="number" min="1" max="80" style="width:100%;margin:4px 0 8px;padding:8px;box-sizing:border-box" />
         </div>
         <div style="flex:1;">
           <label>重试次数</label>
@@ -424,7 +436,7 @@
     key.value = s.apiKey || "";
     model.value = s.model || "";
     lang.value = s.targetLang || "zh-CN";
-    batch.value = String(s.batchSize || 8);
+    batch.value = String(s.batchSize || 24);
     retries.value = String(s.maxRetries || 2);
     headers.value = s.customHeadersText || "";
 
@@ -464,7 +476,7 @@
         apiKey: key.value.trim(),
         model: model.value.trim(),
         targetLang: lang.value.trim() || "zh-CN",
-        batchSize: Number(batch.value || 8),
+        batchSize: Number(batch.value || 24),
         maxRetries: Number(retries.value || 2),
         customHeadersText: headers.value.trim(),
       });
@@ -518,6 +530,18 @@
     fab.addEventListener("click", (e) => {
       e.stopPropagation();
       mTranslate.textContent = state.translated ? "恢复" : "翻译";
+      // 单击默认直接整页翻译/恢复；双击打开设置菜单
+      if (state.translated) {
+        restorePage();
+      } else {
+        translatePage().then(() => {
+          mTranslate.textContent = state.translated ? "恢复" : "翻译";
+        });
+      }
+    });
+
+    fab.addEventListener("dblclick", (e) => {
+      e.stopPropagation();
       menu.style.display = menu.style.display === "none" ? "block" : "none";
     });
 
@@ -533,11 +557,11 @@
   state.settings = normalizeByPreset(await getValue(KEY, DEFAULT));
   mountUI();
 
-  if (typeof GM_registerMenuCommand !== "undefined") {
-    GM_registerMenuCommand("Immersive Lite: 翻译/恢复", async () => {
-      if (state.translated) restorePage();
-      else await translatePage();
-    });
-    GM_registerMenuCommand("Immersive Lite: 打开设置", openSettings);
-  }
+    if (typeof GM_registerMenuCommand !== "undefined") {
+      GM_registerMenuCommand("Immersive Lite: 整页翻译/恢复", async () => {
+        if (state.translated) restorePage();
+        else await translatePage();
+      });
+      GM_registerMenuCommand("Immersive Lite: 打开设置", openSettings);
+    }
 })();
