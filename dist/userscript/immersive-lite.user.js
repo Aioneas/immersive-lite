@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Immersive Lite (Core)
 // @namespace    https://github.com/Aioneas/immersive-lite
-// @version      0.8.1
+// @version      0.9.0
 // @description  Core-only bilingual page translation with custom OpenAI-compatible API (no login/cloud/pricing).
 // @author       Aioneas
 // @match        *://*/*
@@ -22,12 +22,9 @@
 (async function () {
   "use strict";
 
-  const KEY = "immersive_lite_v8";
-  const CACHE_KEY = "immersive_lite_cache_v2";
+  const KEY = "immersive_lite_v9";
+  const CACHE_KEY = "immersive_lite_cache_v3";
   const CACHE_LIMIT = 1200;
-  const FRONT_WINDOW = 18;
-  const BACKGROUND_CHUNK = 10;
-  const BACKGROUND_DELAY = 1200;
 
   const MODEL_PRESETS = {
     openai: [
@@ -48,7 +45,6 @@
     model: "gpt-5.4",
     targetLang: "zh-CN",
     displayMode: "bilingual",
-    speedMode: "fast",
     useCache: true,
   };
 
@@ -59,7 +55,6 @@
     originalHTML: new WeakMap(),
     fab: null,
     fabText: null,
-    fabDot: null,
     panel: null,
     statusEl: null,
     runId: 0,
@@ -68,7 +63,6 @@
     cacheMap: {},
     cacheDirty: false,
     cacheFlushTimer: 0,
-    bgTimer: 0,
   };
 
   function esc(s) {
@@ -120,20 +114,8 @@
       if (!t.model) t.model = "gpt-5.4";
     }
     t.displayMode = t.displayMode === "translated" ? "translated" : "bilingual";
-    t.speedMode = ["balanced", "fast", "aggressive"].includes(t.speedMode) ? t.speedMode : "fast";
     t.useCache = t.useCache !== false;
     return t;
-  }
-
-  function getModeConfig() {
-    const mode = state.settings.speedMode || "fast";
-    if (mode === "aggressive") {
-      return { batchInterval: 40, batchSize: 6, batchLength: 900, concurrency: 18, frontWindow: 22, backgroundChunk: 14, backgroundDelay: 900 };
-    }
-    if (mode === "balanced") {
-      return { batchInterval: 140, batchSize: 8, batchLength: 1300, concurrency: 10, frontWindow: 14, backgroundChunk: 8, backgroundDelay: 1500 };
-    }
-    return { batchInterval: 80, batchSize: 6, batchLength: 1000, concurrency: 14, frontWindow: 18, backgroundChunk: 10, backgroundDelay: 1200 };
   }
 
   function setStatus(msg, err) {
@@ -144,10 +126,15 @@
   function setFabState(mode) {
     if (!state.fab) return;
     const current = mode || "idle";
-    if (state.fabText) state.fabText.textContent = current === "front" ? "…" : "译";
-    state.fab.style.opacity = current === "front" ? ".65" : "1";
-    if (state.fabDot) {
-      state.fabDot.style.display = current === "background" ? "block" : "none";
+    if (state.fabText) {
+      state.fabText.textContent = current === "busy" ? "" : (current === "done" ? "✓" : "译");
+    }
+    if (current === "busy") {
+      state.fab.style.opacity = ".18";
+      state.fab.style.pointerEvents = "none";
+    } else {
+      state.fab.style.opacity = "1";
+      state.fab.style.pointerEvents = "auto";
     }
   }
 
@@ -406,6 +393,14 @@
     node.setAttribute("data-iml-translated", "1");
   }
 
+  const FLOW_CONFIG = {
+    batchInterval: 80,
+    batchSize: 6,
+    batchLength: 1000,
+    concurrency: 14,
+    statusThrottleMs: 180,
+  };
+
   function getOrderedNodes() {
     const nodes = pickNodes();
     const h = window.innerHeight || 800;
@@ -420,18 +415,18 @@
   }
 
   async function translateNodes(nodes, runId, statusPrefix) {
-    const mode = getModeConfig();
     if (state.batchQueue) state.batchQueue.destroy();
     state.batchQueue = createBatchQueue(translateMany, {
-      batchInterval: mode.batchInterval,
-      batchSize: mode.batchSize,
-      batchLength: mode.batchLength,
+      batchInterval: FLOW_CONFIG.batchInterval,
+      batchSize: FLOW_CONFIG.batchSize,
+      batchLength: FLOW_CONFIG.batchLength,
     });
 
     const total = nodes.length;
     let done = 0;
     let failed = 0;
     let cursor = 0;
+    let lastStatusAt = 0;
 
     async function worker() {
       while (true) {
@@ -445,7 +440,11 @@
           if (!state.translating || runId !== state.runId) return;
           if (node && node.isConnected) applyTranslation(node, orig, tr);
           done++;
-          setStatus(`${statusPrefix} ${done}/${total}`);
+          const now = Date.now();
+          if (now - lastStatusAt > FLOW_CONFIG.statusThrottleMs || done === total) {
+            setStatus(`${statusPrefix} ${done}/${total}`);
+            lastStatusAt = now;
+          }
         } catch (e) {
           failed++;
           console.error("[immersive-lite] text err", e);
@@ -453,7 +452,7 @@
       }
     }
 
-    const workerCount = Math.min(mode.concurrency, nodes.length || 1);
+    const workerCount = Math.min(FLOW_CONFIG.concurrency, nodes.length || 1);
     await Promise.all(Array.from({ length: workerCount }, () => worker()));
     if (state.batchQueue) { state.batchQueue.destroy(); state.batchQueue = null; }
     return { done, failed, total };
@@ -464,54 +463,30 @@
     state.translating = true;
     state.runId += 1;
     const runId = state.runId;
-    setFabState("front");
+    setFabState("busy");
 
     try {
       const nodes = getOrderedNodes();
       if (!nodes.length) { setStatus("没找到可翻译文本", true); return; }
 
-      const mode = getModeConfig();
-      const frontNodes = nodes.slice(0, mode.frontWindow || FRONT_WINDOW);
-      const backNodes = nodes.slice(frontNodes.length);
-
-      setStatus(`前台快速翻译 0/${frontNodes.length}`);
-      const front = await translateNodes(frontNodes, runId, "前台快速翻译");
+      setStatus(`流式翻译 0/${nodes.length}`);
+      const res = await translateNodes(nodes, runId, "流式翻译");
       if (!state.translating || runId !== state.runId) return;
-      state.translated = front.done > 0;
+      state.translated = res.done > 0;
+      if (res.failed > 0) setStatus(`完成 ${res.done}/${res.total}，${res.failed} 段失败`, true);
+      else setStatus("");
 
-      if (!backNodes.length) {
-        setStatus(front.failed > 0 ? `完成 ${front.done}/${front.total}，${front.failed} 段失败` : "");
-        return;
-      }
-
-      setStatus("前段已完成，后台继续补全...");
-      setFabState("background");
-      state.bgTimer = setTimeout(async () => {
-        if (!state.translating || runId !== state.runId) return;
-        let start = 0;
-        while (start < backNodes.length) {
-          if (!state.translating || runId !== state.runId) return;
-          const chunk = backNodes.slice(start, start + (mode.backgroundChunk || BACKGROUND_CHUNK));
-          await translateNodes(chunk, runId, "后台补全中");
-          start += chunk.length;
-          await sleep(mode.backgroundDelay || BACKGROUND_DELAY);
-        }
-        if (runId === state.runId) {
-          state.bgTimer = 0;
-          state.translating = false;
-          setFabState("idle");
-          setStatus("");
-        }
-      }, 300);
+      setFabState("done");
+      setTimeout(() => {
+        if (runId === state.runId && !state.translating) setFabState("idle");
+      }, 1200);
     } catch (e) {
       setStatus("翻译失败: " + (e?.message || e), true);
+      setFabState("idle");
     } finally {
-      if (state.bgTimer) {
-        // keep background timer if still active
-      }
-      if (runId === state.runId && !state.bgTimer) {
+      if (runId === state.runId) {
         state.translating = false;
-        setFabState("idle");
+        if (state.batchQueue) { state.batchQueue.destroy(); state.batchQueue = null; }
       }
     }
   }
@@ -519,7 +494,6 @@
   function restorePage() {
     state.runId += 1;
     state.translating = false;
-    if (state.bgTimer) { clearTimeout(state.bgTimer); state.bgTimer = 0; }
     if (state.batchQueue) { state.batchQueue.destroy(); state.batchQueue = null; }
     const nodes = Array.from(document.querySelectorAll("[data-iml-translated='1']"));
     for (const n of nodes) {
@@ -554,7 +528,7 @@
       <div style="display:flex;justify-content:flex-start;align-items:center;margin-bottom:10px;">
         <div>
           <div style="font-size:16px;font-weight:700;color:#10213a;">Immersive Lite</div>
-          <div style="font-size:12px;color:#6f7f97;margin-top:2px;">快速响应 + 后台补全 + 智能缓存 v0.8</div>
+          <div style="font-size:12px;color:#6f7f97;margin-top:2px;">单一路径流式翻译 + 智能缓存 v0.9</div>
         </div>
       </div>
       <div style="display:grid;gap:10px;">
@@ -593,16 +567,8 @@
             </select>
           </div>
         </div>
-        <div>
-          <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">速度模式</label>
-          <select id="iml-speed" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;">
-            <option value="balanced">稳定</option>
-            <option value="fast">推荐</option>
-            <option value="aggressive">极速</option>
-          </select>
-        </div>
         <div style="font-size:12px;color:#6f7f97;line-height:1.5;padding:10px 12px;background:#f4f8ff;border-radius:10px;">
-          推荐模式会优先快速翻前面可见内容，再在你阅读时后台安静补全后面的内容；缓存只保存成功翻译，并自动清理旧记录。
+          开启后会优先使用缓存，避免重复请求；翻译采用单一路径流式调度，边翻边显示，减少阅读等待。
         </div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px;">
@@ -619,12 +585,12 @@
     const $ = (id) => panel.querySelector("#" + id);
     const provider=$("iml-provider"), apiurl=$("iml-apiurl"), base=$("iml-base"), key=$("iml-key");
     const modelSelect=$("iml-model-select"), modelCustom=$("iml-model-custom");
-    const lang=$("iml-lang"), display=$("iml-display"), speed=$("iml-speed");
+    const lang=$("iml-lang"), display=$("iml-display");
     const status=$("iml-status");
 
     state.statusEl = status; state.panel = root;
     provider.value=s.provider||"openai"; apiurl.value=s.apiUrl||""; base.value=s.baseUrl||"";
-    key.value=s.apiKey||""; lang.value=s.targetLang||"zh-CN"; display.value=s.displayMode||"bilingual"; speed.value=s.speedMode||"fast";
+    key.value=s.apiKey||""; lang.value=s.targetLang||"zh-CN"; display.value=s.displayMode||"bilingual";
     buildModelOptions(provider.value, modelSelect, modelCustom, s.model||"");
 
     provider.addEventListener("change", () => {
@@ -650,7 +616,6 @@
         model,
         targetLang: lang.value.trim() || "zh-CN",
         displayMode: display.value,
-        speedMode: speed.value,
       });
       await gmSet(KEY, state.settings);
       setStatus("设置已保存");
@@ -674,10 +639,6 @@
     fabText.style.cssText = "position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);line-height:1;";
     fab.appendChild(fabText);
 
-    const fabDot = document.createElement("span");
-    fabDot.style.cssText = "display:none;position:absolute;top:8px;right:8px;width:8px;height:8px;border-radius:50%;background:#ffd54f;box-shadow:0 0 0 2px rgba(255,255,255,.9);";
-    fab.appendChild(fabDot);
-
     let clickTimer = null;
     fab.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -689,7 +650,6 @@
     document.documentElement.appendChild(root);
     state.fab = fab;
     state.fabText = fabText;
-    state.fabDot = fabDot;
     setFabState("idle");
   }
 
