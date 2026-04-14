@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Immersive Lite (Core)
 // @namespace    https://github.com/Aioneas/immersive-lite
-// @version      0.2.1
+// @version      0.3.0
 // @description  Core-only bilingual page translation with custom OpenAI-compatible API (no login/cloud/pricing).
 // @author       Aioneas
 // @match        *://*/*
@@ -22,18 +22,26 @@
 (async function () {
   "use strict";
 
-  const KEY = "immersive_lite_core_settings_v2";
+  const KEY = "immersive_lite_core_settings_v3";
+  const MODEL_PRESETS = {
+    openai: ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1", "o4-mini", "o3-mini", "custom"],
+    openrouter: ["openai/gpt-4o-mini", "deepseek/deepseek-chat", "anthropic/claude-3.7-sonnet", "google/gemini-2.5-flash", "qwen/qwen2.5-72b-instruct", "custom"],
+    deepseek: ["deepseek-chat", "deepseek-reasoner", "custom"],
+    custom: ["custom"],
+  };
+
   const DEFAULT = {
-    provider: "openai", // openai | openrouter | deepseek | custom
-    apiUrl: "", // full endpoint URL, highest priority
-    baseUrl: "https://api.openai.com",
+    provider: "openrouter",
+    apiUrl: "",
+    baseUrl: "https://openrouter.ai/api",
     apiKey: "",
-    model: "gpt-4o-mini",
-    targetLang: navigator.language || "zh-CN",
-    fallbackService: "none",
+    model: "openai/gpt-4o-mini",
+    targetLang: "zh-CN",
+    displayMode: "bilingual", // bilingual | translated
     customHeadersText: "",
-    batchSize: 24,
+    batchSize: 40,
     maxRetries: 1,
+    concurrency: 8,
   };
 
   const state = {
@@ -41,6 +49,9 @@
     translated: false,
     settings: { ...DEFAULT },
     originalHTML: new WeakMap(),
+    fab: null,
+    panel: null,
+    statusEl: null,
   };
 
   function esc(s) {
@@ -91,8 +102,8 @@
     }
   }
 
-  function normalizeByPreset(s) {
-    const t = { ...s };
+  function normalizeByPreset(input) {
+    const t = { ...input };
 
     if (t.provider === "openrouter") {
       if (!t.baseUrl) t.baseUrl = "https://openrouter.ai/api";
@@ -105,37 +116,32 @@
       if (!t.model) t.model = "gpt-4o-mini";
     }
 
-    t.batchSize = Math.min(80, Math.max(1, Number(t.batchSize || 24)));
+    t.batchSize = Math.min(120, Math.max(1, Number(t.batchSize || 40)));
     t.maxRetries = Math.min(3, Math.max(0, Number(t.maxRetries || 1)));
+    t.concurrency = Math.min(12, Math.max(1, Number(t.concurrency || 8)));
+    t.displayMode = t.displayMode === "translated" ? "translated" : "bilingual";
     return t;
   }
 
   function buildApiUrl(settings) {
-    // 1) full custom endpoint first
     const full = ensureHttp(settings.apiUrl || "");
     if (full) return full;
-
-    // 2) build from baseUrl
-    let b = ensureHttp(settings.baseUrl || "");
-    b = b.replace(/\/$/, "");
-    if (b.endsWith("/v1/chat/completions")) return b;
-    if (b.endsWith("/chat/completions")) return b;
+    let b = ensureHttp(settings.baseUrl || "").replace(/\/$/, "");
+    if (b.endsWith("/v1/chat/completions") || b.endsWith("/chat/completions")) return b;
     if (b.endsWith("/v1")) return b + "/chat/completions";
     return b + "/v1/chat/completions";
   }
 
-  function toast(msg, ms = 2000) {
-    let el = document.getElementById("iml-toast");
-    if (!el) {
-      el = document.createElement("div");
-      el.id = "iml-toast";
-      el.style.cssText = "position:fixed;left:50%;bottom:100px;transform:translateX(-50%);z-index:2147483647;background:rgba(0,0,0,.78);color:#fff;padding:8px 12px;border-radius:10px;font:13px -apple-system;max-width:82vw;text-align:center;";
-      document.documentElement.appendChild(el);
-    }
-    el.textContent = msg;
-    el.style.display = "block";
-    clearTimeout(el._t);
-    el._t = setTimeout(() => (el.style.display = "none"), ms);
+  function setStatus(msg, error = false) {
+    if (!state.statusEl) return;
+    state.statusEl.textContent = msg || "";
+    state.statusEl.style.color = error ? "#d32f2f" : "#666";
+  }
+
+  function setFabBusy(busy) {
+    if (!state.fab) return;
+    state.fab.textContent = busy ? "…" : "译";
+    state.fab.style.opacity = busy ? ".7" : "1";
   }
 
   function pickNodes() {
@@ -149,7 +155,7 @@
       const cs = getComputedStyle(el);
       if (cs.display === "none" || cs.visibility === "hidden") return false;
       const txt = (el.innerText || "").trim();
-      if (txt.length < 18 || txt.length > 1200) return false;
+      if (txt.length < 18 || txt.length > 1400) return false;
       if (el.childElementCount > 0) {
         const hasBlockChild = Array.from(el.children).some((c) => {
           const d = getComputedStyle(c).display;
@@ -191,27 +197,16 @@
   }
 
   function parseTranslationsFromModel(data, expected) {
-    // 1) standard chat completion
     let content = data?.choices?.[0]?.message?.content;
+    if (!content && typeof data?.choices?.[0]?.text === "string") content = data.choices[0].text;
+    if (!content && Array.isArray(data?.translations)) return data.translations;
 
-    // 2) text completion-like
-    if (!content && typeof data?.choices?.[0]?.text === "string") {
-      content = data.choices[0].text;
-    }
-
-    // 3) direct object
-    if (!content && Array.isArray(data?.translations)) {
-      return data.translations;
-    }
-
-    // 4) parse content
     if (typeof content === "string") {
       try {
         const j = JSON.parse(content);
         const arr = j?.translations || j?.data || j;
         if (Array.isArray(arr)) return arr;
       } catch {}
-
       const m = content.match(/\[[\s\S]*\]/);
       if (m) {
         try {
@@ -232,7 +227,6 @@
 
     const headers = { "Content-Type": "application/json" };
     if (s.apiKey) headers.Authorization = "Bearer " + s.apiKey;
-
     if (s.provider === "openrouter") {
       headers["HTTP-Referer"] = "https://github.com/Aioneas/immersive-lite";
       headers["X-Title"] = "Immersive Lite";
@@ -264,7 +258,6 @@
     for (let attempt = 0; attempt <= s.maxRetries; attempt++) {
       let res = await postJSON(url, headers, JSON.stringify(payload));
 
-      // fallback when response_format unsupported
       if (!res.ok && String(res.text || "").includes("response_format")) {
         const p2 = { ...payload };
         delete p2.response_format;
@@ -281,9 +274,9 @@
         return parseTranslationsFromModel(data, texts.length);
       }
 
-      lastErr = new Error(`HTTP ${res.status} ${String(res.text || "").slice(0, 120)}`);
+      lastErr = new Error(`HTTP ${res.status} ${String(res.text || "").slice(0, 160)}`);
       if (attempt < s.maxRetries && shouldRetry(res.status)) {
-        await sleep(500 * (attempt + 1));
+        await sleep(380 * (attempt + 1));
         continue;
       }
       throw lastErr;
@@ -291,24 +284,37 @@
     throw lastErr || new Error("未知错误");
   }
 
+  function applyTranslation(node, orig, tr) {
+    if (!state.originalHTML.has(node)) state.originalHTML.set(node, node.innerHTML);
+    if (state.settings.displayMode === "translated") {
+      node.innerHTML = `<span style=\"display:block;opacity:.95\">${esc(tr || "")}</span>`;
+    } else {
+      node.innerHTML = `<span style=\"display:block;opacity:.95\">${esc(orig || "")}</span><span style=\"display:block;opacity:.72;color:#555;font-size:.92em\">${esc(tr || "")}</span>`;
+    }
+    node.setAttribute("data-iml-translated", "1");
+  }
+
   async function translatePage() {
-    if (state.translating) return;
+    if (state.translating || state.translated) return;
     state.translating = true;
+    setFabBusy(true);
+    setStatus("翻译中...");
+
     try {
       const nodes = pickNodes();
       if (!nodes.length) {
-        toast("没找到可翻译文本");
+        setStatus("没找到可翻译文本", true);
         return;
       }
 
       const texts = nodes.map((n) => (n.innerText || "").trim());
-      const batchSize = Math.max(1, Number(state.settings.batchSize || 24));
+      const batchSize = Math.max(1, Number(state.settings.batchSize || 40));
       const groups = [];
       for (let i = 0; i < texts.length; i += batchSize) {
         groups.push({ subTexts: texts.slice(i, i + batchSize), subNodes: nodes.slice(i, i + batchSize) });
       }
 
-      const maxConcurrency = Math.min(6, groups.length || 1);
+      const maxConcurrency = Math.min(Number(state.settings.concurrency || 8), groups.length || 1);
       let cursor = 0;
       let done = 0;
 
@@ -319,27 +325,21 @@
           const translated = await translateBatch(g.subTexts);
           for (let j = 0; j < g.subNodes.length; j++) {
             const node = g.subNodes[j];
-            const orig = g.subTexts[j] || "";
-            const tr = translated[j] || "";
-            if (!state.originalHTML.has(node)) state.originalHTML.set(node, node.innerHTML);
-            node.innerHTML = `<span style=\"display:block;opacity:.95\">${esc(orig)}</span><span style=\"display:block;opacity:.72;color:#555;font-size:.92em\">${esc(tr)}</span>`;
-            node.setAttribute("data-iml-translated", "1");
+            applyTranslation(node, g.subTexts[j] || "", translated[j] || "");
             done += 1;
-          }
-          if (done % 20 === 0 || done === texts.length) {
-            toast(`翻译中 ${done}/${texts.length}` , 180);
           }
         }
       }
 
       await Promise.all(Array.from({ length: maxConcurrency }, () => worker()));
-
-      state.translated = true;
-      toast("翻译完成");
+      state.translated = done > 0;
+      setStatus(state.translated ? "已完成" : "无可翻译内容");
     } catch (e) {
-      toast("翻译失败: " + (e?.message || e), 3200);
+      setStatus("翻译失败: " + (e?.message || e), true);
+      console.error("[immersive-lite] translate failed", e);
     } finally {
       state.translating = false;
+      setFabBusy(false);
     }
   }
 
@@ -351,7 +351,22 @@
       n.removeAttribute("data-iml-translated");
     }
     state.translated = false;
-    toast("已恢复原文");
+    setStatus("已恢复原文");
+  }
+
+  function buildModelOptions(provider, selectEl, customInput, currentModel) {
+    const list = MODEL_PRESETS[provider] || ["custom"];
+    selectEl.innerHTML = list.map((m) => `<option value=\"${esc(m)}\">${esc(m)}</option>`).join("");
+
+    if (list.includes(currentModel)) {
+      selectEl.value = currentModel;
+      customInput.style.display = "none";
+      customInput.value = "";
+    } else {
+      selectEl.value = "custom";
+      customInput.style.display = "block";
+      customInput.value = currentModel || "";
+    }
   }
 
   function openSettings() {
@@ -367,7 +382,7 @@
     root.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.42);z-index:2147483647;";
 
     const panel = document.createElement("div");
-    panel.style.cssText = "position:absolute;left:0;right:0;bottom:0;background:#fff;border-radius:16px 16px 0 0;padding:14px 14px 24px;max-height:85vh;overflow:auto;font:14px -apple-system;";
+    panel.style.cssText = "position:absolute;left:0;right:0;bottom:0;background:#fff;border-radius:16px 16px 0 0;padding:14px 14px 24px;max-height:86vh;overflow:auto;font:14px -apple-system;";
     panel.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
         <b>Immersive Lite 设置</b>
@@ -382,7 +397,7 @@
         <option value="custom">custom</option>
       </select>
 
-      <label>API 完整地址（可选，优先）</label>
+      <label>API 完整地址（优先）</label>
       <input id="iml-apiurl" placeholder="https://xxx/v1/chat/completions" style="width:100%;margin:4px 0 8px;padding:8px;box-sizing:border-box" />
 
       <label>Base URL（自动拼接）</label>
@@ -392,29 +407,43 @@
       <input id="iml-key" type="password" style="width:100%;margin:4px 0 8px;padding:8px;box-sizing:border-box" />
 
       <label>Model</label>
-      <input id="iml-model" style="width:100%;margin:4px 0 8px;padding:8px;box-sizing:border-box" />
+      <select id="iml-model-select" style="width:100%;margin:4px 0 8px;padding:8px"></select>
+      <input id="iml-model-custom" placeholder="自定义模型名" style="display:none;width:100%;margin:-2px 0 8px;padding:8px;box-sizing:border-box" />
 
       <label>目标语言 (如 zh-CN / en / ja)</label>
       <input id="iml-lang" style="width:100%;margin:4px 0 8px;padding:8px;box-sizing:border-box" />
 
+      <label>显示模式</label>
+      <select id="iml-display" style="width:100%;margin:4px 0 8px;padding:8px">
+        <option value="bilingual">双语对照</option>
+        <option value="translated">仅译文</option>
+      </select>
+
       <div style="display:flex;gap:8px;">
         <div style="flex:1;">
-          <label>每批段落数</label>
-          <input id="iml-batch" type="number" min="1" max="80" style="width:100%;margin:4px 0 8px;padding:8px;box-sizing:border-box" />
+          <label>批次默认</label>
+          <input id="iml-batch" type="number" min="1" max="120" style="width:100%;margin:4px 0 8px;padding:8px;box-sizing:border-box" />
         </div>
         <div style="flex:1;">
-          <label>重试次数</label>
-          <input id="iml-retries" type="number" min="0" max="5" style="width:100%;margin:4px 0 8px;padding:8px;box-sizing:border-box" />
+          <label>并发</label>
+          <input id="iml-concurrency" type="number" min="1" max="12" style="width:100%;margin:4px 0 8px;padding:8px;box-sizing:border-box" />
         </div>
       </div>
+
+      <label>重试次数</label>
+      <input id="iml-retries" type="number" min="0" max="3" style="width:100%;margin:4px 0 8px;padding:8px;box-sizing:border-box" />
 
       <label>自定义请求头 JSON（可选）</label>
       <textarea id="iml-headers" rows="3" placeholder='{"X-Title":"My App"}' style="width:100%;margin:4px 0 12px;padding:8px;box-sizing:border-box"></textarea>
 
-      <button id="iml-save" style="width:100%;padding:10px;border:none;border-radius:10px;background:#1677ff;color:#fff">保存</button>
-      <div style="color:#666;font-size:12px;margin-top:8px;line-height:1.4;">
-        提示：如果你填了“API 完整地址”，会优先用它，不再拼接 /v1/chat/completions。
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <button id="iml-save" style="padding:10px;border:none;border-radius:10px;background:#1677ff;color:#fff">保存</button>
+        <button id="iml-restore" style="padding:10px;border:none;border-radius:10px;background:#f3f3f3">恢复原文</button>
+        <button id="iml-retranslate" style="padding:10px;border:none;border-radius:10px;background:#f3f3f3">重新翻译</button>
+        <button id="iml-close2" style="padding:10px;border:none;border-radius:10px;background:#f3f3f3">关闭</button>
       </div>
+
+      <div id="iml-status" style="color:#666;font-size:12px;margin-top:10px;line-height:1.4;"></div>
     `;
 
     root.appendChild(panel);
@@ -424,47 +453,63 @@
     const apiurl = panel.querySelector("#iml-apiurl");
     const base = panel.querySelector("#iml-base");
     const key = panel.querySelector("#iml-key");
-    const model = panel.querySelector("#iml-model");
+    const modelSelect = panel.querySelector("#iml-model-select");
+    const modelCustom = panel.querySelector("#iml-model-custom");
     const lang = panel.querySelector("#iml-lang");
+    const display = panel.querySelector("#iml-display");
     const batch = panel.querySelector("#iml-batch");
+    const concurrency = panel.querySelector("#iml-concurrency");
     const retries = panel.querySelector("#iml-retries");
     const headers = panel.querySelector("#iml-headers");
+    const status = panel.querySelector("#iml-status");
 
-    provider.value = s.provider || "openai";
+    state.statusEl = status;
+    state.panel = root;
+
+    provider.value = s.provider || "openrouter";
     apiurl.value = s.apiUrl || "";
     base.value = s.baseUrl || "";
     key.value = s.apiKey || "";
-    model.value = s.model || "";
     lang.value = s.targetLang || "zh-CN";
-    batch.value = String(s.batchSize || 24);
-    retries.value = String(s.maxRetries || 2);
+    display.value = s.displayMode || "bilingual";
+    batch.value = String(s.batchSize || 40);
+    concurrency.value = String(s.concurrency || 8);
+    retries.value = String(s.maxRetries || 1);
     headers.value = s.customHeadersText || "";
+    buildModelOptions(provider.value, modelSelect, modelCustom, s.model || "");
 
     provider.addEventListener("change", () => {
-      const p = provider.value;
-      if (p === "openai") {
-        if (!base.value) base.value = "https://api.openai.com";
-        if (!model.value) model.value = "gpt-4o-mini";
-      }
-      if (p === "openrouter") {
-        if (!base.value) base.value = "https://openrouter.ai/api";
-        if (!model.value) model.value = "openai/gpt-4o-mini";
-      }
-      if (p === "deepseek") {
-        if (!base.value) base.value = "https://api.deepseek.com";
-        if (!model.value) model.value = "deepseek-chat";
-      }
+      if (provider.value === "openai" && !base.value) base.value = "https://api.openai.com";
+      if (provider.value === "openrouter" && !base.value) base.value = "https://openrouter.ai/api";
+      if (provider.value === "deepseek" && !base.value) base.value = "https://api.deepseek.com";
+      buildModelOptions(provider.value, modelSelect, modelCustom, "");
     });
 
-    panel.querySelector("#iml-close").addEventListener("click", () => (root.style.display = "none"));
+    modelSelect.addEventListener("change", () => {
+      modelCustom.style.display = modelSelect.value === "custom" ? "block" : "none";
+    });
+
+    function closePanel() {
+      root.style.display = "none";
+    }
+
+    panel.querySelector("#iml-close").addEventListener("click", closePanel);
+    panel.querySelector("#iml-close2").addEventListener("click", closePanel);
+
     root.addEventListener("click", (e) => {
-      if (e.target === root) root.style.display = "none";
+      if (e.target === root) closePanel();
     });
 
     panel.querySelector("#iml-save").addEventListener("click", async () => {
       const testHeaders = parseHeadersFromText(headers.value.trim());
       if (testHeaders === null) {
-        toast("自定义请求头 JSON 格式错误");
+        setStatus("自定义请求头 JSON 格式错误", true);
+        return;
+      }
+
+      const model = modelSelect.value === "custom" ? modelCustom.value.trim() : modelSelect.value;
+      if (!model) {
+        setStatus("模型不能为空", true);
         return;
       }
 
@@ -474,16 +519,27 @@
         apiUrl: apiurl.value.trim(),
         baseUrl: base.value.trim(),
         apiKey: key.value.trim(),
-        model: model.value.trim(),
+        model,
         targetLang: lang.value.trim() || "zh-CN",
-        batchSize: Number(batch.value || 24),
-        maxRetries: Number(retries.value || 2),
+        displayMode: display.value,
+        batchSize: Number(batch.value || 40),
+        concurrency: Number(concurrency.value || 8),
+        maxRetries: Number(retries.value || 1),
         customHeadersText: headers.value.trim(),
       });
 
       await setValue(KEY, state.settings);
-      toast("设置已保存");
-      root.style.display = "none";
+      setStatus("设置已保存");
+    });
+
+    panel.querySelector("#iml-restore").addEventListener("click", () => {
+      restorePage();
+      setStatus("已恢复原文");
+    });
+
+    panel.querySelector("#iml-retranslate").addEventListener("click", async () => {
+      restorePage();
+      await translatePage();
     });
   }
 
@@ -494,74 +550,32 @@
     root.id = "iml-ui-root";
     root.style.cssText = "position:fixed;right:14px;bottom:22px;z-index:2147483646;";
 
-    const menu = document.createElement("div");
-    menu.id = "iml-quick-menu";
-    menu.style.cssText = "display:none;position:absolute;right:0;bottom:52px;background:#fff;border-radius:12px;box-shadow:0 6px 22px rgba(0,0,0,.22);padding:6px;min-width:94px;";
-
-    const mTranslate = document.createElement("button");
-    mTranslate.textContent = state.translated ? "恢复" : "翻译";
-    mTranslate.style.cssText = "display:block;width:100%;border:none;background:#f5f5f5;border-radius:8px;padding:8px 10px;margin-bottom:6px;font-size:13px;";
-    mTranslate.addEventListener("click", () => {
-      menu.style.display = "none";
-      if (state.translated) {
-        restorePage();
-      } else {
-        translatePage().then(() => {
-          mTranslate.textContent = state.translated ? "恢复" : "翻译";
-        });
-      }
-    });
-
-    const mSettings = document.createElement("button");
-    mSettings.textContent = "设置";
-    mSettings.style.cssText = "display:block;width:100%;border:none;background:#f5f5f5;border-radius:8px;padding:8px 10px;font-size:13px;";
-    mSettings.addEventListener("click", () => {
-      menu.style.display = "none";
-      openSettings();
-    });
-
-    menu.appendChild(mTranslate);
-    menu.appendChild(mSettings);
-
     const fab = document.createElement("button");
     fab.id = "iml-fab-main";
     fab.textContent = "译";
-    fab.style.cssText = "width:44px;height:44px;border:none;border-radius:22px;background:#1677ff;color:#fff;font-size:20px;box-shadow:0 4px 16px rgba(0,0,0,.24);";
-    fab.addEventListener("click", (e) => {
+    fab.style.cssText = "width:46px;height:46px;border:none;border-radius:23px;background:#1677ff;color:#fff;font-size:20px;box-shadow:0 4px 16px rgba(0,0,0,.24);";
+
+    fab.addEventListener("click", async (e) => {
       e.stopPropagation();
-      mTranslate.textContent = state.translated ? "恢复" : "翻译";
-      // 单击默认直接整页翻译/恢复；双击打开设置菜单
-      if (state.translated) {
-        restorePage();
-      } else {
-        translatePage().then(() => {
-          mTranslate.textContent = state.translated ? "恢复" : "翻译";
-        });
-      }
+      await translatePage();
     });
 
     fab.addEventListener("dblclick", (e) => {
       e.stopPropagation();
-      menu.style.display = menu.style.display === "none" ? "block" : "none";
+      openSettings();
     });
 
-    document.addEventListener("click", () => {
-      if (menu.style.display === "block") menu.style.display = "none";
-    });
-
-    root.appendChild(menu);
     root.appendChild(fab);
     document.documentElement.appendChild(root);
+    state.fab = fab;
   }
 
   state.settings = normalizeByPreset(await getValue(KEY, DEFAULT));
   mountUI();
 
-    if (typeof GM_registerMenuCommand !== "undefined") {
-      GM_registerMenuCommand("Immersive Lite: 整页翻译/恢复", async () => {
-        if (state.translated) restorePage();
-        else await translatePage();
-      });
-      GM_registerMenuCommand("Immersive Lite: 打开设置", openSettings);
-    }
+  if (typeof GM_registerMenuCommand !== "undefined") {
+    GM_registerMenuCommand("Immersive Lite: 整页翻译", translatePage);
+    GM_registerMenuCommand("Immersive Lite: 打开设置", openSettings);
+    GM_registerMenuCommand("Immersive Lite: 恢复原文", restorePage);
+  }
 })();
