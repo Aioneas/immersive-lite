@@ -41,31 +41,12 @@
       "gpt-5-nano",
       "custom"
     ],
-    openrouter: [
-      "openai/gpt-5.4",
-      "openai/gpt-5.3",
-      "openai/gpt-5.2",
-      "openai/gpt-5.1",
-      "openai/gpt-5",
-      "openai/gpt-5.3-codex",
-      "openai/gpt-5.3-codex-spark",
-      "openai/gpt-5.2-codex",
-      "openai/gpt-5.1-codex-max",
-      "openai/gpt-5.1-codex",
-      "openai/gpt-5-codex",
-      "openai/gpt-5-codex-mini",
-      "deepseek/deepseek-chat",
-      "anthropic/claude-3.7-sonnet",
-      "google/gemini-2.5-flash",
-      "qwen/qwen2.5-72b-instruct",
-      "custom"
-    ],
     deepseek: ["deepseek-chat", "deepseek-reasoner", "custom"],
     custom: ["custom"],
   };
 
   const DEFAULT = {
-    provider: "openrouter",
+    provider: "openai",
     apiUrl: "",
     baseUrl: "https://openrouter.ai/api",
     apiKey: "",
@@ -139,10 +120,7 @@
   function normalizeByPreset(input) {
     const t = { ...input };
 
-    if (t.provider === "openrouter") {
-      if (!t.baseUrl) t.baseUrl = "https://openrouter.ai/api";
-      if (!t.model) t.model = "openai/gpt-5.4";
-    } else if (t.provider === "deepseek") {
+    if (t.provider === "deepseek") {
       if (!t.baseUrl) t.baseUrl = "https://api.deepseek.com";
       if (!t.model) t.model = "deepseek-chat";
     } else if (t.provider === "openai") {
@@ -189,7 +167,7 @@
       const cs = getComputedStyle(el);
       if (cs.display === "none" || cs.visibility === "hidden") return false;
       const txt = (el.innerText || "").trim();
-      if (txt.length < 18 || txt.length > 1400) return false;
+      if (txt.length < 10 || txt.length > 1600) return false;
       if (el.childElementCount > 0) {
         const hasBlockChild = Array.from(el.children).some((c) => {
           const d = getComputedStyle(c).display;
@@ -367,7 +345,7 @@
 
       await Promise.all(Array.from({ length: maxConcurrency }, () => worker()));
       state.translated = done > 0;
-      setStatus(state.translated ? "已完成" : "无可翻译内容");
+      setStatus(state.translated ? "" : "无可翻译内容");
     } catch (e) {
       setStatus("翻译失败: " + (e?.message || e), true);
       console.error("[immersive-lite] translate failed", e);
@@ -418,15 +396,13 @@
     const panel = document.createElement("div");
     panel.style.cssText = "position:absolute;left:0;right:0;bottom:0;background:#fff;border-radius:16px 16px 0 0;padding:14px 14px 24px;max-height:86vh;overflow:auto;font:14px -apple-system;";
     panel.innerHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <div style="display:flex;justify-content:flex-start;align-items:center;margin-bottom:8px">
         <b>Immersive Lite 设置</b>
-        <button id="iml-close" style="border:none;background:#eee;border-radius:8px;padding:4px 8px">关闭</button>
       </div>
 
       <label>Provider</label>
       <select id="iml-provider" style="width:100%;margin:4px 0 8px;padding:8px">
         <option value="openai">openai</option>
-        <option value="openrouter">openrouter</option>
         <option value="deepseek">deepseek</option>
         <option value="custom">custom</option>
       </select>
@@ -514,7 +490,6 @@
 
     provider.addEventListener("change", () => {
       if (provider.value === "openai" && !base.value) base.value = "https://api.openai.com";
-      if (provider.value === "openrouter" && !base.value) base.value = "https://openrouter.ai/api";
       if (provider.value === "deepseek" && !base.value) base.value = "https://api.deepseek.com";
       buildModelOptions(provider.value, modelSelect, modelCustom, "");
     });
@@ -527,7 +502,6 @@
       root.style.display = "none";
     }
 
-    panel.querySelector("#iml-close").addEventListener("click", closePanel);
     panel.querySelector("#iml-close2").addEventListener("click", closePanel);
 
     root.addEventListener("click", (e) => {
