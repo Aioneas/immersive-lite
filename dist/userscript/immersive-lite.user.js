@@ -24,8 +24,42 @@
 
   const KEY = "immersive_lite_core_settings_v3";
   const MODEL_PRESETS = {
-    openai: ["gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-4.1", "gpt-4.1-mini", "custom"],
-    openrouter: ["openai/gpt-5", "openai/gpt-5-mini", "openai/gpt-5-nano", "deepseek/deepseek-chat", "anthropic/claude-3.7-sonnet", "google/gemini-2.5-flash", "qwen/qwen2.5-72b-instruct", "custom"],
+    openai: [
+      "gpt-5.4",
+      "gpt-5.3",
+      "gpt-5.2",
+      "gpt-5.1",
+      "gpt-5",
+      "gpt-5.3-codex",
+      "gpt-5.3-codex-spark",
+      "gpt-5.2-codex",
+      "gpt-5.1-codex-max",
+      "gpt-5.1-codex",
+      "gpt-5-codex",
+      "gpt-5-codex-mini",
+      "gpt-5-mini",
+      "gpt-5-nano",
+      "custom"
+    ],
+    openrouter: [
+      "openai/gpt-5.4",
+      "openai/gpt-5.3",
+      "openai/gpt-5.2",
+      "openai/gpt-5.1",
+      "openai/gpt-5",
+      "openai/gpt-5.3-codex",
+      "openai/gpt-5.3-codex-spark",
+      "openai/gpt-5.2-codex",
+      "openai/gpt-5.1-codex-max",
+      "openai/gpt-5.1-codex",
+      "openai/gpt-5-codex",
+      "openai/gpt-5-codex-mini",
+      "deepseek/deepseek-chat",
+      "anthropic/claude-3.7-sonnet",
+      "google/gemini-2.5-flash",
+      "qwen/qwen2.5-72b-instruct",
+      "custom"
+    ],
     deepseek: ["deepseek-chat", "deepseek-reasoner", "custom"],
     custom: ["custom"],
   };
@@ -35,7 +69,7 @@
     apiUrl: "",
     baseUrl: "https://openrouter.ai/api",
     apiKey: "",
-    model: "openai/gpt-5-mini",
+    model: "gpt-5.4",
     targetLang: "zh-CN",
     displayMode: "bilingual", // bilingual | translated
     customHeadersText: "",
@@ -107,13 +141,13 @@
 
     if (t.provider === "openrouter") {
       if (!t.baseUrl) t.baseUrl = "https://openrouter.ai/api";
-      if (!t.model) t.model = "openai/gpt-5-mini";
+      if (!t.model) t.model = "openai/gpt-5.4";
     } else if (t.provider === "deepseek") {
       if (!t.baseUrl) t.baseUrl = "https://api.deepseek.com";
       if (!t.model) t.model = "deepseek-chat";
     } else if (t.provider === "openai") {
       if (!t.baseUrl) t.baseUrl = "https://api.openai.com";
-      if (!t.model) t.model = "gpt-5-mini";
+      if (!t.model) t.model = "gpt-5.4";
     }
 
     t.batchSize = Math.min(120, Math.max(1, Number(t.batchSize || 40)));
