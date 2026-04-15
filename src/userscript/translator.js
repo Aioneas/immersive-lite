@@ -1,3 +1,28 @@
+  async function maybeAutoTranslateOnLoad() {
+    if (state.autoTranslateTriggered || state.translating || state.translated) return false;
+
+    const s = norm(state.settings);
+    if (!s.autoTranslateEnglish) return false;
+
+    const targetLang = s.targetLang || "";
+    if (!targetLang || isSameLanguage(targetLang, "en")) return false;
+
+    const sample = pickPageLanguageSample();
+    if (sample.length < 200) return false;
+
+    const pageLang = detectPagePrimaryLanguage(sample);
+    if (pageLang !== "en") return false;
+    if (isSameLanguage(pageLang, targetLang)) return false;
+
+    const nodes = pickNodes();
+    if (nodes.length < 3) return false;
+
+    state.autoTranslateTriggered = true;
+    setStatus("检测到英文页面，已自动翻译");
+    await translatePage({ autoTriggered: true });
+    return true;
+  }
+
   async function translateText(text) {
     if (shouldSkipTranslationText(text)) return text;
 
@@ -96,8 +121,10 @@
     node.setAttribute("data-iml-translated", "1");
   }
 
-  async function translatePage() {
+  async function translatePage(options) {
+    const opts = options || {};
     if (state.translating || state.translated) return;
+    if (!opts.autoTriggered) state.autoTranslateTriggered = false;
     state.translating = true;
     state.runId += 1;
     const runId = state.runId;
@@ -168,6 +195,7 @@
   function restorePage() {
     state.runId += 1;
     state.translating = false;
+    state.autoTranslateTriggered = false;
     if (state.batchQueue) { state.batchQueue.destroy(); state.batchQueue = null; }
     const nodes = Array.from(document.querySelectorAll("[data-iml-translated='1']"));
     for (const n of nodes) {

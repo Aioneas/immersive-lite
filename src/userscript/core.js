@@ -20,6 +20,7 @@
     apiKey: "",
     model: "gpt-5.4",
     targetLang: "zh-CN",
+    autoTranslateEnglish: false,
     displayMode: "bilingual",
     speedMode: "fast",
     batchInterval: 120,
@@ -48,7 +49,23 @@
     cacheWriteChain: Promise.resolve(),
     fabPos: null,
     fabDockTimer: 0,
+    autoTranslateTriggered: false,
+    autoTranslateInitTimer: 0,
   };
+
+  function normalizeLangCode(value) {
+    return String(value || "").trim().replace(/_/g, "-").toLowerCase();
+  }
+
+  function getLangBase(value) {
+    return normalizeLangCode(value).split("-")[0] || "";
+  }
+
+  function isSameLanguage(a, b) {
+    const aa = getLangBase(a);
+    const bb = getLangBase(b);
+    return !!aa && !!bb && aa === bb;
+  }
 
   function esc(s) {
     return String(s)
@@ -58,7 +75,9 @@
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#39;");
   }
+
   function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
 
   async function gmGet(k, d) {
     try {
@@ -116,6 +135,7 @@
     const full = ensureHttp(s.apiUrl || "");
     if (full) return full;
     let b = ensureHttp(s.baseUrl || "").replace(/\/$/, "");
+    if (!b) return "";
     if (b.endsWith("/v1/chat/completions") || b.endsWith("/chat/completions")) return b;
     if (b.endsWith("/v1")) return b + "/chat/completions";
     return b + "/v1/chat/completions";
@@ -153,6 +173,7 @@
     t.batchLength = Math.min(4000, Math.max(200, Number(t.batchLength || preset.batchLength)));
     t.concurrency = Math.min(32, Math.max(1, Number(t.concurrency || preset.concurrency)));
     t.displayMode = t.displayMode === "translated" ? "translated" : "bilingual";
+    t.autoTranslateEnglish = t.autoTranslateEnglish === true;
     t.useCache = t.useCache !== false;
     return t;
   }

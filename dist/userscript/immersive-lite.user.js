@@ -46,6 +46,7 @@
     apiKey: "",
     model: "gpt-5.4",
     targetLang: "zh-CN",
+    autoTranslateEnglish: false,
     displayMode: "bilingual",
     speedMode: "fast",
     batchInterval: 120,
@@ -74,7 +75,23 @@
     cacheWriteChain: Promise.resolve(),
     fabPos: null,
     fabDockTimer: 0,
+    autoTranslateTriggered: false,
+    autoTranslateInitTimer: 0,
   };
+
+  function normalizeLangCode(value) {
+    return String(value || "").trim().replace(/_/g, "-").toLowerCase();
+  }
+
+  function getLangBase(value) {
+    return normalizeLangCode(value).split("-")[0] || "";
+  }
+
+  function isSameLanguage(a, b) {
+    const aa = getLangBase(a);
+    const bb = getLangBase(b);
+    return !!aa && !!bb && aa === bb;
+  }
 
   function esc(s) {
     return String(s)
@@ -84,7 +101,9 @@
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#39;");
   }
+
   function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
 
   async function gmGet(k, d) {
     try {
@@ -142,6 +161,7 @@
     const full = ensureHttp(s.apiUrl || "");
     if (full) return full;
     let b = ensureHttp(s.baseUrl || "").replace(/\/$/, "");
+    if (!b) return "";
     if (b.endsWith("/v1/chat/completions") || b.endsWith("/chat/completions")) return b;
     if (b.endsWith("/v1")) return b + "/chat/completions";
     return b + "/v1/chat/completions";
@@ -179,6 +199,7 @@
     t.batchLength = Math.min(4000, Math.max(200, Number(t.batchLength || preset.batchLength)));
     t.concurrency = Math.min(32, Math.max(1, Number(t.concurrency || preset.concurrency)));
     t.displayMode = t.displayMode === "translated" ? "translated" : "bilingual";
+    t.autoTranslateEnglish = t.autoTranslateEnglish === true;
     t.useCache = t.useCache !== false;
     return t;
   }
@@ -384,6 +405,77 @@
     return true;
   }
 
+  function pickPageLanguageSample() {
+    const texts = [];
+    const pushText = (value) => {
+      const text = String(value || "").replace(/\s+/g, " ").trim();
+      if (!text) return;
+      texts.push(text);
+    };
+
+    pushText(document.title || "");
+
+    const selectors = "article,main,p,h1,h2,h3,li,blockquote,figcaption,summary,td,th,div,section";
+    const nodes = Array.from(document.querySelectorAll(selectors));
+    for (const el of nodes) {
+      if (texts.join(" ").length >= 4000) break;
+      if (!el || !el.isConnected) continue;
+      if (el.closest("#iml-ui-root") || el.closest("#iml-settings-overlay")) continue;
+      const tag = el.tagName;
+      if (["SCRIPT", "STYLE", "NOSCRIPT", "TEXTAREA", "INPUT", "BUTTON", "SELECT", "OPTION", "CODE", "PRE", "SVG"].includes(tag)) continue;
+      const cs = getComputedStyle(el);
+      if (cs.display === "none" || cs.visibility === "hidden") continue;
+      const text = (el.innerText || "").replace(/\s+/g, " ").trim();
+      if (!text || text.length < 24) continue;
+      pushText(text);
+    }
+
+    return texts.join(" ").slice(0, 4000);
+  }
+
+  function detectCjkLanguage(sample) {
+    const text = String(sample || "");
+    const zh = (text.match(/[\u4e00-\u9fff]/g) || []).length;
+    const ja = (text.match(/[\u3040-\u30ff]/g) || []).length;
+    const ko = (text.match(/[\uac00-\ud7af]/g) || []).length;
+    const max = Math.max(zh, ja, ko);
+    if (max < 24) return "";
+    if (max === ja) return "ja";
+    if (max === ko) return "ko";
+    return "zh";
+  }
+
+  function isEnglishTextSample(sample) {
+    const text = String(sample || "").replace(/\s+/g, " ").trim().slice(0, 4000);
+    if (text.length < 160) return false;
+    const latinLetters = (text.match(/[A-Za-z]/g) || []).length;
+    const cjkChars = (text.match(/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/g) || []).length;
+    const words = text.match(/[A-Za-z]{2,}/g) || [];
+    const commonWords = text.match(/\b(the|and|that|with|for|from|this|have|your|you|not|are|was|were|will|can|more|one|all|about|into|than|there|their|what|when|where|which|how|why|who|has|had|new|after|before|over|under|between|during|news|article|story|read|said)\b/gi) || [];
+    return latinLetters >= 140 && latinLetters > cjkChars * 4 && words.length >= 35 && commonWords.length >= 8;
+  }
+
+  function detectPagePrimaryLanguage(sampleInput) {
+    const sample = typeof sampleInput === "string" ? sampleInput : pickPageLanguageSample();
+    const cjk = detectCjkLanguage(sample);
+    if (cjk) return cjk;
+
+    const metaCandidates = [
+      document.documentElement?.lang,
+      document.querySelector('meta[property="og:locale"]')?.content,
+      document.querySelector('meta[http-equiv="content-language"]')?.content,
+      document.querySelector('meta[name="language"]')?.content,
+    ];
+
+    for (const item of metaCandidates) {
+      const base = getLangBase(item);
+      if (base) return base;
+    }
+
+    if (isEnglishTextSample(sample)) return "en";
+    return "und";
+  }
+
   function pickNodes() {
     const sel = "p,li,h1,h2,h3,h4,h5,h6,blockquote,figcaption,summary,td,th,a,span,div,article,section,dd,dt,time";
     const all = Array.from(document.querySelectorAll(sel));
@@ -500,6 +592,31 @@
   }
 
 
+  async function maybeAutoTranslateOnLoad() {
+    if (state.autoTranslateTriggered || state.translating || state.translated) return false;
+
+    const s = norm(state.settings);
+    if (!s.autoTranslateEnglish) return false;
+
+    const targetLang = s.targetLang || "";
+    if (!targetLang || isSameLanguage(targetLang, "en")) return false;
+
+    const sample = pickPageLanguageSample();
+    if (sample.length < 200) return false;
+
+    const pageLang = detectPagePrimaryLanguage(sample);
+    if (pageLang !== "en") return false;
+    if (isSameLanguage(pageLang, targetLang)) return false;
+
+    const nodes = pickNodes();
+    if (nodes.length < 3) return false;
+
+    state.autoTranslateTriggered = true;
+    setStatus("检测到英文页面，已自动翻译");
+    await translatePage({ autoTriggered: true });
+    return true;
+  }
+
   async function translateText(text) {
     if (shouldSkipTranslationText(text)) return text;
 
@@ -598,8 +715,10 @@
     node.setAttribute("data-iml-translated", "1");
   }
 
-  async function translatePage() {
+  async function translatePage(options) {
+    const opts = options || {};
     if (state.translating || state.translated) return;
+    if (!opts.autoTriggered) state.autoTranslateTriggered = false;
     state.translating = true;
     state.runId += 1;
     const runId = state.runId;
@@ -670,6 +789,7 @@
   function restorePage() {
     state.runId += 1;
     state.translating = false;
+    state.autoTranslateTriggered = false;
     if (state.batchQueue) { state.batchQueue.destroy(); state.batchQueue = null; }
     const nodes = Array.from(document.querySelectorAll("[data-iml-translated='1']"));
     for (const n of nodes) {
@@ -764,8 +884,15 @@
             </select>
           </div>
         </div>
+        <div>
+          <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">自动翻译英文网页</label>
+          <select id="iml-auto-en" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;">
+            <option value="off">关闭</option>
+            <option value="on">开启</option>
+          </select>
+        </div>
         <div style="font-size:12px;color:#6f7f97;line-height:1.5;padding:10px 12px;background:#f4f8ff;border-radius:10px;">
-          稳定：更稳、更省；推荐：默认，适合大多数页面；极速：更快看到结果。缓存按服务 / 模型 / 目标语言 / 接口地址隔离；关闭缓存时不复用历史结果。
+          稳定：更稳、更省；推荐：默认，适合大多数页面；极速：更快看到结果。自动翻译英文网页开启后，会在检测到英文正文时自动执行一次整页翻译；当目标语言本身也是英语时不会触发。缓存按服务 / 模型 / 目标语言 / 接口地址隔离；关闭缓存时不复用历史结果。
         </div>
         <div id="iml-cache-card" style="font-size:12px;color:#5d6d86;line-height:1.6;padding:10px 12px;background:#f8fafc;border:1px solid #e4ebf5;border-radius:10px;">
           <div style="font-weight:600;color:#334b73;margin-bottom:4px;">缓存</div>
@@ -791,6 +918,7 @@
     const modelSelect = $("iml-model-select"), modelCustom = $("iml-model-custom");
     const lang = $("iml-lang"), display = $("iml-display"), speed = $("iml-speed");
     const cacheEnabled = $("iml-cache-enabled");
+    const autoTranslateEnglish = $("iml-auto-en");
     const cacheScope = $("iml-cache-scope"), cacheStats = $("iml-cache-stats");
     const status = $("iml-status");
 
@@ -806,6 +934,7 @@
         apiKey: key.value.trim(),
         model: model || state.settings.model,
         targetLang: lang.value.trim() || "zh-CN",
+        autoTranslateEnglish: autoTranslateEnglish.value === "on",
         displayMode: display.value,
         speedMode: speed.value,
         useCache: cacheEnabled.value !== "off",
@@ -829,6 +958,7 @@
     display.value = s.displayMode || "bilingual";
     speed.value = s.speedMode || "fast";
     cacheEnabled.value = s.useCache === false ? "off" : "on";
+    autoTranslateEnglish.value = s.autoTranslateEnglish ? "on" : "off";
     buildModelOptions(provider.value, modelSelect, modelCustom, s.model || "");
     refreshCacheInfo();
 
@@ -850,6 +980,7 @@
     speed.addEventListener("change", refreshCacheInfo);
     display.addEventListener("change", refreshCacheInfo);
     cacheEnabled.addEventListener("change", refreshCacheInfo);
+    autoTranslateEnglish.addEventListener("change", refreshCacheInfo);
 
     function closePanel() { root.remove(); }
     $("iml-close2").addEventListener("click", closePanel);
@@ -1195,10 +1326,26 @@
 
   if (window.self !== window.top) return;
 
+  function scheduleAutoTranslateInit() {
+    if (state.autoTranslateInitTimer) {
+      clearTimeout(state.autoTranslateInitTimer);
+      state.autoTranslateInitTimer = 0;
+    }
+    state.autoTranslateInitTimer = setTimeout(async () => {
+      state.autoTranslateInitTimer = 0;
+      try {
+        await maybeAutoTranslateOnLoad();
+      } catch (e) {
+        console.error("[immersive-lite] auto translate init failed", e);
+      }
+    }, 900);
+  }
+
   state.settings = await loadSettingsWithMigration();
   state.cache = normalizeCacheStore((await gmGet(CACHE_KEY, {})) || {});
   state.fabPos = await gmGet(FAB_POS_KEY, null);
   mountUI();
+  scheduleAutoTranslateInit();
 
   if (typeof GM_registerMenuCommand !== "undefined") {
     GM_registerMenuCommand("Immersive Lite: 整页翻译", translatePage);

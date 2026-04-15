@@ -79,8 +79,15 @@
             </select>
           </div>
         </div>
+        <div>
+          <label style="display:block;color:#5f6f87;font-size:12px;margin-bottom:4px;">自动翻译英文网页</label>
+          <select id="iml-auto-en" style="width:100%;padding:10px;border:1px solid #d6e0ef;border-radius:10px;background:#fff;">
+            <option value="off">关闭</option>
+            <option value="on">开启</option>
+          </select>
+        </div>
         <div style="font-size:12px;color:#6f7f97;line-height:1.5;padding:10px 12px;background:#f4f8ff;border-radius:10px;">
-          稳定：更稳、更省；推荐：默认，适合大多数页面；极速：更快看到结果。缓存按服务 / 模型 / 目标语言 / 接口地址隔离；关闭缓存时不复用历史结果。
+          稳定：更稳、更省；推荐：默认，适合大多数页面；极速：更快看到结果。自动翻译英文网页开启后，会在检测到英文正文时自动执行一次整页翻译；当目标语言本身也是英语时不会触发。缓存按服务 / 模型 / 目标语言 / 接口地址隔离；关闭缓存时不复用历史结果。
         </div>
         <div id="iml-cache-card" style="font-size:12px;color:#5d6d86;line-height:1.6;padding:10px 12px;background:#f8fafc;border:1px solid #e4ebf5;border-radius:10px;">
           <div style="font-weight:600;color:#334b73;margin-bottom:4px;">缓存</div>
@@ -106,6 +113,7 @@
     const modelSelect = $("iml-model-select"), modelCustom = $("iml-model-custom");
     const lang = $("iml-lang"), display = $("iml-display"), speed = $("iml-speed");
     const cacheEnabled = $("iml-cache-enabled");
+    const autoTranslateEnglish = $("iml-auto-en");
     const cacheScope = $("iml-cache-scope"), cacheStats = $("iml-cache-stats");
     const status = $("iml-status");
 
@@ -121,6 +129,7 @@
         apiKey: key.value.trim(),
         model: model || state.settings.model,
         targetLang: lang.value.trim() || "zh-CN",
+        autoTranslateEnglish: autoTranslateEnglish.value === "on",
         displayMode: display.value,
         speedMode: speed.value,
         useCache: cacheEnabled.value !== "off",
@@ -144,6 +153,7 @@
     display.value = s.displayMode || "bilingual";
     speed.value = s.speedMode || "fast";
     cacheEnabled.value = s.useCache === false ? "off" : "on";
+    autoTranslateEnglish.value = s.autoTranslateEnglish ? "on" : "off";
     buildModelOptions(provider.value, modelSelect, modelCustom, s.model || "");
     refreshCacheInfo();
 
@@ -165,6 +175,7 @@
     speed.addEventListener("change", refreshCacheInfo);
     display.addEventListener("change", refreshCacheInfo);
     cacheEnabled.addEventListener("change", refreshCacheInfo);
+    autoTranslateEnglish.addEventListener("change", refreshCacheInfo);
 
     function closePanel() { root.remove(); }
     $("iml-close2").addEventListener("click", closePanel);
