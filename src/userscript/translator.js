@@ -179,48 +179,55 @@
     return { cached, pending };
   }
 
-  function getViewportPriority(node) {
-    const rect = node.getBoundingClientRect();
-    const vh = window.innerHeight || 800;
-    const inView = rect.bottom > 0 && rect.top < vh;
-    if (inView) return { phase: 0, distance: Math.abs(rect.top) };
-    if (rect.top >= vh) return { phase: 1, distance: rect.top - vh };
-    return { phase: 2, distance: Math.abs(rect.bottom) };
-  }
-
-  function splitTranslationPhases(nodes) {
+  function splitTranslationBuckets(nodes) {
     const foreground = [];
-    const background = [];
+    const near = [];
+    const far = [];
     for (const node of nodes) {
-      const p = getViewportPriority(node);
+      const p = getNearViewportPriority(node);
       if (p.phase === 0) foreground.push(node);
-      else background.push(node);
+      else if (p.phase === 1) near.push(node);
+      else far.push(node);
     }
-    foreground.sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
-    background.sort((a, b) => {
-      const pa = getViewportPriority(a), pb = getViewportPriority(b);
+    const sorter = (a, b) => {
+      const pa = getNearViewportPriority(a), pb = getNearViewportPriority(b);
       if (pa.phase !== pb.phase) return pa.phase - pb.phase;
       return pa.distance - pb.distance;
-    });
-    return { foreground, background };
+    };
+    foreground.sort(sorter);
+    near.sort(sorter);
+    far.sort(sorter);
+    return { foreground, near, far };
   }
+
 
   function createPhaseQueueConfig(base, phase) {
     const s = base || norm(state.settings);
     if (phase === "foreground") {
-      return {
+      return tuneQueueConfig({
         batchInterval: 0,
         batchSize: Math.min(4, Math.max(1, s.batchSize)),
         batchLength: Math.min(600, Math.max(240, s.batchLength)),
         immediateFirstRun: true,
-      };
+        concurrency: s.concurrency,
+      }, "foreground");
     }
-    return {
+    if (phase === "near") {
+      return tuneQueueConfig({
+        batchInterval: Math.max(20, Math.min(80, s.batchInterval)),
+        batchSize: Math.min(6, Math.max(2, s.batchSize)),
+        batchLength: Math.min(900, Math.max(300, s.batchLength)),
+        immediateFirstRun: false,
+        concurrency: s.concurrency,
+      }, "near");
+    }
+    return tuneQueueConfig({
       batchInterval: s.batchInterval,
       batchSize: s.batchSize,
       batchLength: s.batchLength,
       immediateFirstRun: false,
-    };
+      concurrency: s.concurrency,
+    }, "far");
   }
 
   function getPhaseWorkerCount(settings, phaseName, nodeCount) {
@@ -246,11 +253,12 @@
   async function runTranslationPhase(nodes, runId, totalState, phaseName) {
     if (!nodes.length) return;
     const s = norm(state.settings);
+    const phaseConfig = createPhaseQueueConfig(s, phaseName);
     if (state.batchQueue) state.batchQueue.destroy();
-    state.batchQueue = createBatchQueue(translateMany, createPhaseQueueConfig(s, phaseName));
+    state.batchQueue = createBatchQueue(translateMany, phaseConfig);
 
     let cursor = 0;
-    const workerCount = getPhaseWorkerCount(s, phaseName, nodes.length);
+    const workerCount = getPhaseWorkerCount({ ...s, concurrency: phaseConfig.concurrency || s.concurrency }, phaseName, nodes.length);
 
     async function worker() {
       while (true) {
@@ -260,7 +268,9 @@
         const node = nodes[idx];
         const orig = (node.innerText || "").trim();
         try {
+          const startedAt = Date.now();
           const tr = await translateText(orig);
+          recordAdaptiveSample({ ms: Date.now() - startedAt, count: 1, chars: orig.length, ok: true });
           if (!state.translating || runId !== state.runId) return;
           enqueueTranslationRender({
             runId,
@@ -273,6 +283,7 @@
             },
           });
         } catch (e) {
+          recordAdaptiveSample({ ms: 2800, count: 1, chars: orig.length, ok: false });
           totalState.failed++;
           console.error("[immersive-lite] text err", phaseName, e);
         }
@@ -297,13 +308,14 @@
       const nodes = pickNodes();
       if (!nodes.length) { setStatus("没找到可翻译文本", true); return; }
 
-      const { foreground, background } = splitTranslationPhases(nodes);
+      const { foreground, near, far } = splitTranslationBuckets(nodes);
       const totalState = { total: nodes.length, done: 0, failed: 0 };
-      setStatus(`翻译中 0/${totalState.total}`);
+      setStatus(`翻译中 0/${totalState.total}（${state.adaptiveProfile || getAdaptiveProfileName()}）`);
 
       const cachedForeground = splitNodesByCache(foreground);
-      const cachedBackground = splitNodesByCache(background);
-      const cachedEntries = cachedForeground.cached;
+      const cachedNear = splitNodesByCache(near);
+      const cachedFar = splitNodesByCache(far);
+      const cachedEntries = cachedForeground.cached.concat(cachedNear.cached.slice(0, 8));
       for (const item of cachedEntries) {
         enqueueTranslationRender({
           runId,
@@ -321,7 +333,9 @@
 
       await runTranslationPhase(cachedForeground.pending, runId, totalState, "foreground");
       if (!state.translating || runId !== state.runId) return;
-      await runTranslationPhase(cachedBackground.pending, runId, totalState, "background");
+      await runTranslationPhase(cachedNear.pending, runId, totalState, "near");
+      if (!state.translating || runId !== state.runId) return;
+      await runTranslationPhase(cachedFar.pending, runId, totalState, "far");
       if (runId !== state.runId) return;
 
       state.translated = totalState.done > 0;

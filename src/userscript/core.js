@@ -53,6 +53,8 @@
     autoTranslateInitTimer: 0,
     renderQueue: [],
     renderScheduled: false,
+    adaptiveSamples: [],
+    adaptiveProfile: "base",
   };
 
   function normalizeLangCode(value) {
@@ -184,4 +186,54 @@
     if (!state.statusEl) return;
     state.statusEl.textContent = msg || "";
     state.statusEl.style.color = err ? "#d32f2f" : "#6f7f97";
+  }
+
+  function recordAdaptiveSample(sample) {
+    const item = sample && typeof sample === "object" ? sample : null;
+    if (!item) return;
+    state.adaptiveSamples.push({
+      ms: Math.max(0, Number(item.ms || 0)),
+      count: Math.max(1, Number(item.count || 1)),
+      chars: Math.max(1, Number(item.chars || 1)),
+      ok: item.ok !== false,
+      at: Date.now(),
+    });
+    if (state.adaptiveSamples.length > 18) state.adaptiveSamples.splice(0, state.adaptiveSamples.length - 18);
+    state.adaptiveProfile = getAdaptiveProfileName();
+  }
+
+  function getAdaptiveProfileName() {
+    const okSamples = state.adaptiveSamples.filter((x) => x && x.ok !== false);
+    if (okSamples.length < 3) return "base";
+    const avgMs = okSamples.reduce((sum, x) => sum + Number(x.ms || 0), 0) / okSamples.length;
+    if (avgMs >= 2600) return "slow";
+    if (avgMs <= 1100) return "fast";
+    return "base";
+  }
+
+  function tuneQueueConfig(baseConfig, phaseName) {
+    const cfg = { ...(baseConfig || {}) };
+    const profile = getAdaptiveProfileName();
+    if (phaseName === "foreground") {
+      if (profile === "slow") {
+        cfg.batchSize = Math.min(cfg.batchSize || 4, 3);
+        cfg.batchLength = Math.min(cfg.batchLength || 600, 420);
+      } else if (profile === "fast") {
+        cfg.batchSize = Math.min(5, Math.max(1, (cfg.batchSize || 4) + 1));
+        cfg.batchLength = Math.min(760, Math.max(240, (cfg.batchLength || 600) + 120));
+      }
+      return cfg;
+    }
+    if (profile === "slow") {
+      cfg.batchInterval = Math.min(220, Math.max(40, Number(cfg.batchInterval || 120) + 30));
+      cfg.batchSize = Math.min(cfg.batchSize || 8, 6);
+      cfg.batchLength = Math.min(cfg.batchLength || 1200, 900);
+      cfg.concurrency = Math.min(cfg.concurrency || 12, 10);
+    } else if (profile === "fast") {
+      cfg.batchInterval = Math.max(40, Number(cfg.batchInterval || 120) - 20);
+      cfg.batchSize = Math.min(10, Math.max(1, Number(cfg.batchSize || 8) + 1));
+      cfg.batchLength = Math.min(1500, Math.max(200, Number(cfg.batchLength || 1200) + 180));
+      cfg.concurrency = Math.min(16, Math.max(1, Number(cfg.concurrency || 12) + 1));
+    }
+    return cfg;
   }

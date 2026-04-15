@@ -79,6 +79,8 @@
     autoTranslateInitTimer: 0,
     renderQueue: [],
     renderScheduled: false,
+    adaptiveSamples: [],
+    adaptiveProfile: "base",
   };
 
   function normalizeLangCode(value) {
@@ -210,6 +212,56 @@
     if (!state.statusEl) return;
     state.statusEl.textContent = msg || "";
     state.statusEl.style.color = err ? "#d32f2f" : "#6f7f97";
+  }
+
+  function recordAdaptiveSample(sample) {
+    const item = sample && typeof sample === "object" ? sample : null;
+    if (!item) return;
+    state.adaptiveSamples.push({
+      ms: Math.max(0, Number(item.ms || 0)),
+      count: Math.max(1, Number(item.count || 1)),
+      chars: Math.max(1, Number(item.chars || 1)),
+      ok: item.ok !== false,
+      at: Date.now(),
+    });
+    if (state.adaptiveSamples.length > 18) state.adaptiveSamples.splice(0, state.adaptiveSamples.length - 18);
+    state.adaptiveProfile = getAdaptiveProfileName();
+  }
+
+  function getAdaptiveProfileName() {
+    const okSamples = state.adaptiveSamples.filter((x) => x && x.ok !== false);
+    if (okSamples.length < 3) return "base";
+    const avgMs = okSamples.reduce((sum, x) => sum + Number(x.ms || 0), 0) / okSamples.length;
+    if (avgMs >= 2600) return "slow";
+    if (avgMs <= 1100) return "fast";
+    return "base";
+  }
+
+  function tuneQueueConfig(baseConfig, phaseName) {
+    const cfg = { ...(baseConfig || {}) };
+    const profile = getAdaptiveProfileName();
+    if (phaseName === "foreground") {
+      if (profile === "slow") {
+        cfg.batchSize = Math.min(cfg.batchSize || 4, 3);
+        cfg.batchLength = Math.min(cfg.batchLength || 600, 420);
+      } else if (profile === "fast") {
+        cfg.batchSize = Math.min(5, Math.max(1, (cfg.batchSize || 4) + 1));
+        cfg.batchLength = Math.min(760, Math.max(240, (cfg.batchLength || 600) + 120));
+      }
+      return cfg;
+    }
+    if (profile === "slow") {
+      cfg.batchInterval = Math.min(220, Math.max(40, Number(cfg.batchInterval || 120) + 30));
+      cfg.batchSize = Math.min(cfg.batchSize || 8, 6);
+      cfg.batchLength = Math.min(cfg.batchLength || 1200, 900);
+      cfg.concurrency = Math.min(cfg.concurrency || 12, 10);
+    } else if (profile === "fast") {
+      cfg.batchInterval = Math.max(40, Number(cfg.batchInterval || 120) - 20);
+      cfg.batchSize = Math.min(10, Math.max(1, Number(cfg.batchSize || 8) + 1));
+      cfg.batchLength = Math.min(1500, Math.max(200, Number(cfg.batchLength || 1200) + 180));
+      cfg.concurrency = Math.min(16, Math.max(1, Number(cfg.concurrency || 12) + 1));
+    }
+    return cfg;
   }
 
 
@@ -396,6 +448,15 @@
     return false;
   }
 
+  function isLikelyUiChromeText(text) {
+    const t = String(text || "").replace(/\s+/g, " ").trim();
+    if (!t) return false;
+    if (t.length > 32) return false;
+    if (/^(home|menu|search|share|login|log in|sign in|sign up|register|subscribe|follow|following|next|previous|back|close|open|download|read more|more|comments?)$/i.test(t)) return true;
+    if (/^(首页|菜单|搜索|分享|登录|注册|订阅|关注|下一页|上一页|返回|关闭|打开|下载|更多|评论)$/i.test(t)) return true;
+    return false;
+  }
+
   function hasTranslationValue(text) {
     const t = String(text || "").replace(/\s+/g, " ").trim();
     if (!t) return false;
@@ -403,6 +464,7 @@
     if (isLikelyDateOrTime(t)) return false;
     if (isMostlyNumeric(t)) return false;
     if (isLikelyIdentifier(t)) return false;
+    if (isLikelyUiChromeText(t)) return false;
     if (/^[\p{P}\p{S}\s]+$/u.test(t)) return false;
     return true;
   }
@@ -476,6 +538,22 @@
 
     if (isEnglishTextSample(sample)) return "en";
     return "und";
+  }
+
+  function getNearViewportPriority(node) {
+    const rect = node.getBoundingClientRect();
+    const vh = window.innerHeight || 800;
+    const nearTop = -vh * 1.2;
+    const nearBottom = vh * 2.2;
+    const inView = rect.bottom > 0 && rect.top < vh;
+    const nearView = rect.bottom > nearTop && rect.top < nearBottom;
+    if (inView) return { phase: 0, distance: Math.abs(rect.top) };
+    if (nearView) {
+      if (rect.top >= vh) return { phase: 1, distance: rect.top - vh };
+      return { phase: 1, distance: Math.abs(rect.bottom) };
+    }
+    if (rect.top >= vh) return { phase: 2, distance: rect.top - vh };
+    return { phase: 3, distance: Math.abs(rect.bottom) };
   }
 
   function pickNodes() {
@@ -803,48 +881,55 @@
     return { cached, pending };
   }
 
-  function getViewportPriority(node) {
-    const rect = node.getBoundingClientRect();
-    const vh = window.innerHeight || 800;
-    const inView = rect.bottom > 0 && rect.top < vh;
-    if (inView) return { phase: 0, distance: Math.abs(rect.top) };
-    if (rect.top >= vh) return { phase: 1, distance: rect.top - vh };
-    return { phase: 2, distance: Math.abs(rect.bottom) };
-  }
-
-  function splitTranslationPhases(nodes) {
+  function splitTranslationBuckets(nodes) {
     const foreground = [];
-    const background = [];
+    const near = [];
+    const far = [];
     for (const node of nodes) {
-      const p = getViewportPriority(node);
+      const p = getNearViewportPriority(node);
       if (p.phase === 0) foreground.push(node);
-      else background.push(node);
+      else if (p.phase === 1) near.push(node);
+      else far.push(node);
     }
-    foreground.sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
-    background.sort((a, b) => {
-      const pa = getViewportPriority(a), pb = getViewportPriority(b);
+    const sorter = (a, b) => {
+      const pa = getNearViewportPriority(a), pb = getNearViewportPriority(b);
       if (pa.phase !== pb.phase) return pa.phase - pb.phase;
       return pa.distance - pb.distance;
-    });
-    return { foreground, background };
+    };
+    foreground.sort(sorter);
+    near.sort(sorter);
+    far.sort(sorter);
+    return { foreground, near, far };
   }
+
 
   function createPhaseQueueConfig(base, phase) {
     const s = base || norm(state.settings);
     if (phase === "foreground") {
-      return {
+      return tuneQueueConfig({
         batchInterval: 0,
         batchSize: Math.min(4, Math.max(1, s.batchSize)),
         batchLength: Math.min(600, Math.max(240, s.batchLength)),
         immediateFirstRun: true,
-      };
+        concurrency: s.concurrency,
+      }, "foreground");
     }
-    return {
+    if (phase === "near") {
+      return tuneQueueConfig({
+        batchInterval: Math.max(20, Math.min(80, s.batchInterval)),
+        batchSize: Math.min(6, Math.max(2, s.batchSize)),
+        batchLength: Math.min(900, Math.max(300, s.batchLength)),
+        immediateFirstRun: false,
+        concurrency: s.concurrency,
+      }, "near");
+    }
+    return tuneQueueConfig({
       batchInterval: s.batchInterval,
       batchSize: s.batchSize,
       batchLength: s.batchLength,
       immediateFirstRun: false,
-    };
+      concurrency: s.concurrency,
+    }, "far");
   }
 
   function getPhaseWorkerCount(settings, phaseName, nodeCount) {
@@ -870,11 +955,12 @@
   async function runTranslationPhase(nodes, runId, totalState, phaseName) {
     if (!nodes.length) return;
     const s = norm(state.settings);
+    const phaseConfig = createPhaseQueueConfig(s, phaseName);
     if (state.batchQueue) state.batchQueue.destroy();
-    state.batchQueue = createBatchQueue(translateMany, createPhaseQueueConfig(s, phaseName));
+    state.batchQueue = createBatchQueue(translateMany, phaseConfig);
 
     let cursor = 0;
-    const workerCount = getPhaseWorkerCount(s, phaseName, nodes.length);
+    const workerCount = getPhaseWorkerCount({ ...s, concurrency: phaseConfig.concurrency || s.concurrency }, phaseName, nodes.length);
 
     async function worker() {
       while (true) {
@@ -884,7 +970,9 @@
         const node = nodes[idx];
         const orig = (node.innerText || "").trim();
         try {
+          const startedAt = Date.now();
           const tr = await translateText(orig);
+          recordAdaptiveSample({ ms: Date.now() - startedAt, count: 1, chars: orig.length, ok: true });
           if (!state.translating || runId !== state.runId) return;
           enqueueTranslationRender({
             runId,
@@ -897,6 +985,7 @@
             },
           });
         } catch (e) {
+          recordAdaptiveSample({ ms: 2800, count: 1, chars: orig.length, ok: false });
           totalState.failed++;
           console.error("[immersive-lite] text err", phaseName, e);
         }
@@ -921,13 +1010,14 @@
       const nodes = pickNodes();
       if (!nodes.length) { setStatus("没找到可翻译文本", true); return; }
 
-      const { foreground, background } = splitTranslationPhases(nodes);
+      const { foreground, near, far } = splitTranslationBuckets(nodes);
       const totalState = { total: nodes.length, done: 0, failed: 0 };
-      setStatus(`翻译中 0/${totalState.total}`);
+      setStatus(`翻译中 0/${totalState.total}（${state.adaptiveProfile || getAdaptiveProfileName()}）`);
 
       const cachedForeground = splitNodesByCache(foreground);
-      const cachedBackground = splitNodesByCache(background);
-      const cachedEntries = cachedForeground.cached;
+      const cachedNear = splitNodesByCache(near);
+      const cachedFar = splitNodesByCache(far);
+      const cachedEntries = cachedForeground.cached.concat(cachedNear.cached.slice(0, 8));
       for (const item of cachedEntries) {
         enqueueTranslationRender({
           runId,
@@ -945,7 +1035,9 @@
 
       await runTranslationPhase(cachedForeground.pending, runId, totalState, "foreground");
       if (!state.translating || runId !== state.runId) return;
-      await runTranslationPhase(cachedBackground.pending, runId, totalState, "background");
+      await runTranslationPhase(cachedNear.pending, runId, totalState, "near");
+      if (!state.translating || runId !== state.runId) return;
+      await runTranslationPhase(cachedFar.pending, runId, totalState, "far");
       if (runId !== state.runId) return;
 
       state.translated = totalState.done > 0;

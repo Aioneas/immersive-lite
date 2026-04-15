@@ -23,6 +23,15 @@
     return false;
   }
 
+  function isLikelyUiChromeText(text) {
+    const t = String(text || "").replace(/\s+/g, " ").trim();
+    if (!t) return false;
+    if (t.length > 32) return false;
+    if (/^(home|menu|search|share|login|log in|sign in|sign up|register|subscribe|follow|following|next|previous|back|close|open|download|read more|more|comments?)$/i.test(t)) return true;
+    if (/^(首页|菜单|搜索|分享|登录|注册|订阅|关注|下一页|上一页|返回|关闭|打开|下载|更多|评论)$/i.test(t)) return true;
+    return false;
+  }
+
   function hasTranslationValue(text) {
     const t = String(text || "").replace(/\s+/g, " ").trim();
     if (!t) return false;
@@ -30,6 +39,7 @@
     if (isLikelyDateOrTime(t)) return false;
     if (isMostlyNumeric(t)) return false;
     if (isLikelyIdentifier(t)) return false;
+    if (isLikelyUiChromeText(t)) return false;
     if (/^[\p{P}\p{S}\s]+$/u.test(t)) return false;
     return true;
   }
@@ -103,6 +113,22 @@
 
     if (isEnglishTextSample(sample)) return "en";
     return "und";
+  }
+
+  function getNearViewportPriority(node) {
+    const rect = node.getBoundingClientRect();
+    const vh = window.innerHeight || 800;
+    const nearTop = -vh * 1.2;
+    const nearBottom = vh * 2.2;
+    const inView = rect.bottom > 0 && rect.top < vh;
+    const nearView = rect.bottom > nearTop && rect.top < nearBottom;
+    if (inView) return { phase: 0, distance: Math.abs(rect.top) };
+    if (nearView) {
+      if (rect.top >= vh) return { phase: 1, distance: rect.top - vh };
+      return { phase: 1, distance: Math.abs(rect.bottom) };
+    }
+    if (rect.top >= vh) return { phase: 2, distance: rect.top - vh };
+    return { phase: 3, distance: Math.abs(rect.bottom) };
   }
 
   function pickNodes() {
