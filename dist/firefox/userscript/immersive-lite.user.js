@@ -26,7 +26,6 @@
 
   const KEY = "immersive_lite_v7";
   const CACHE_KEY = "immersive_lite_cache_v1";
-  const PROVIDER_CAPS_KEY = "immersive_lite_provider_caps_v1";
   const FAB_POS_KEY = "immersive_lite_fab_pos_v2";
   const MODEL_PRESETS = {
     openai: [
@@ -71,7 +70,6 @@
     inflight: new Map(),
     batchQueue: null,
     cache: {},
-    providerCaps: {},
     cacheFlushTimer: 0,
     cacheWriteSeq: 0,
     cacheWriteChain: Promise.resolve(),
@@ -83,9 +81,6 @@
     renderScheduled: false,
     adaptiveSamples: [],
     adaptiveProfile: "base",
-    statusTimer: 0,
-    pendingStatus: "",
-    pendingStatusError: false,
   };
 
   function normalizeLangCode(value) {
@@ -214,32 +209,9 @@
   }
 
   function setStatus(msg, err) {
-    state.pendingStatus = msg || "";
-    state.pendingStatusError = !!err;
-    if (state.statusTimer) return;
-    state.statusTimer = setTimeout(() => {
-      state.statusTimer = 0;
-      if (!state.statusEl) return;
-      state.statusEl.textContent = state.pendingStatus || "";
-      state.statusEl.style.color = state.pendingStatusError ? "#d32f2f" : "#6f7f97";
-    }, err ? 0 : 120);
-  }
-
-  function makeProviderCapsKey(settings) {
-    const s = norm(settings || state.settings);
-    return JSON.stringify([s.provider, s.model, buildApiUrl(s)]);
-  }
-
-  function getProviderCaps(settings) {
-    const key = makeProviderCapsKey(settings || state.settings);
-    return state.providerCaps[key] && typeof state.providerCaps[key] === "object" ? state.providerCaps[key] : {};
-  }
-
-  async function setProviderCaps(partial, settings) {
-    const key = makeProviderCapsKey(settings || state.settings);
-    const prev = getProviderCaps(settings || state.settings);
-    state.providerCaps[key] = { ...prev, ...(partial || {}), at: Date.now() };
-    await gmSet(PROVIDER_CAPS_KEY, state.providerCaps);
+    if (!state.statusEl) return;
+    state.statusEl.textContent = msg || "";
+    state.statusEl.style.color = err ? "#d32f2f" : "#6f7f97";
   }
 
   function recordAdaptiveSample(sample) {
@@ -584,8 +556,6 @@
     return { phase: 3, distance: Math.abs(rect.bottom) };
   }
 
-  const SKIP_TAGS = new Set(["SCRIPT","STYLE","NOSCRIPT","TEXTAREA","INPUT","BUTTON","SELECT","OPTION","CODE","PRE","SVG"]);
-
   function pickNodes() {
     const sel = "p,li,h1,h2,h3,h4,h5,h6,blockquote,figcaption,summary,td,th,a,span,div,article,section,dd,dt,time";
     const all = Array.from(document.querySelectorAll(sel));
@@ -594,20 +564,16 @@
       if (el.closest("#iml-ui-root") || el.closest("#iml-settings-overlay")) return false;
       if (el.getAttribute("data-iml-translated") === "1") return false;
       const tag = el.tagName;
-      if (SKIP_TAGS.has(tag)) return false;
+      if (["SCRIPT","STYLE","NOSCRIPT","TEXTAREA","INPUT","BUTTON","SELECT","OPTION","CODE","PRE","SVG"].includes(tag)) return false;
+      const cs = getComputedStyle(el);
+      if (cs.display === "none" || cs.visibility === "hidden") return false;
       const txt = (el.innerText || "").trim();
       if (!hasTranslationValue(txt)) return false;
       if (txt.length > 2000) return false;
-      try {
-        const cs = getComputedStyle(el);
-        if (cs.display === "none" || cs.visibility === "hidden") return false;
-      } catch { return false; }
       if (el.childElementCount > 0) {
         const hasBlock = Array.from(el.children).some((c) => {
-          try {
-            const d = getComputedStyle(c).display;
-            return d === "block" || d === "flex" || d === "grid";
-          } catch { return false; }
+          const d = getComputedStyle(c).display;
+          return d === "block" || d === "flex" || d === "grid";
         });
         if (hasBlock) return false;
       }
@@ -673,8 +639,14 @@
     return new Array(expected).fill("");
   }
 
-  function requestTranslations(url, headers, payload, allowResponseFormat) {
-    return postJSON(url, headers, JSON.stringify(payload));
+  async function requestTranslations(url, headers, payload, allowResponseFormat) {
+    let res = await postJSON(url, headers, JSON.stringify(payload));
+    if (!res.ok && allowResponseFormat && String(res.text || "").includes("response_format")) {
+      const p2 = { ...payload };
+      delete p2.response_format;
+      res = await postJSON(url, headers, JSON.stringify(p2));
+    }
+    return res;
   }
 
   function buildTranslationPayload(texts, settings) {
@@ -699,20 +671,11 @@
     if (s.apiKey) headers.Authorization = "Bearer " + s.apiKey;
 
     const retryOn = (st) => [408,429,500,502,503,504].includes(st);
-    const caps = getProviderCaps(s);
     const payload = buildTranslationPayload(texts, s);
     const maxAttempts = 2;
 
     for (let attempt = 0; attempt <= maxAttempts; attempt++) {
-      let res = await requestTranslations(url, headers, payload, true);
-      if (!res.ok && caps.responseFormat !== false && String(res.text || "").includes("response_format")) {
-        const p2 = { ...payload };
-        delete p2.response_format;
-        res = await postJSON(url, headers, JSON.stringify(p2));
-        await setProviderCaps({ responseFormat: false }, s);
-      } else if (res.ok && caps.responseFormat == null && payload.response_format) {
-        await setProviderCaps({ responseFormat: true }, s);
-      }
+      const res = await requestTranslations(url, headers, payload, true);
       if (res.ok) {
         const data = JSON.parse(res.text);
         return parseResult(data, texts.length);
@@ -919,27 +882,24 @@
   }
 
   function splitTranslationBuckets(nodes) {
-    const items = nodes.map((node) => ({ node, priority: getNearViewportPriority(node) }));
     const foreground = [];
     const near = [];
     const far = [];
-    for (const item of items) {
-      if (item.priority.phase === 0) foreground.push(item);
-      else if (item.priority.phase === 1) near.push(item);
-      else far.push(item);
+    for (const node of nodes) {
+      const p = getNearViewportPriority(node);
+      if (p.phase === 0) foreground.push(node);
+      else if (p.phase === 1) near.push(node);
+      else far.push(node);
     }
     const sorter = (a, b) => {
-      if (a.priority.phase !== b.priority.phase) return a.priority.phase - b.priority.phase;
-      return a.priority.distance - b.priority.distance;
+      const pa = getNearViewportPriority(a), pb = getNearViewportPriority(b);
+      if (pa.phase !== pb.phase) return pa.phase - pb.phase;
+      return pa.distance - pb.distance;
     };
     foreground.sort(sorter);
     near.sort(sorter);
     far.sort(sorter);
-    return {
-      foreground: foreground.map((x) => x.node),
-      near: near.map((x) => x.node),
-      far: far.map((x) => x.node),
-    };
+    return { foreground, near, far };
   }
 
 
@@ -1651,7 +1611,6 @@
 
   state.settings = await loadSettingsWithMigration();
   state.cache = normalizeCacheStore((await gmGet(CACHE_KEY, {})) || {});
-  state.providerCaps = (await gmGet(PROVIDER_CAPS_KEY, {})) || {};
   state.fabPos = await gmGet(FAB_POS_KEY, null);
   mountUI();
   scheduleAutoTranslateInit();

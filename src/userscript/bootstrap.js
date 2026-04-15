@@ -17,7 +17,6 @@
 
   state.settings = await loadSettingsWithMigration();
   state.cache = normalizeCacheStore((await gmGet(CACHE_KEY, {})) || {});
-  state.providerCaps = (await gmGet(PROVIDER_CAPS_KEY, {})) || {};
   state.fabPos = await gmGet(FAB_POS_KEY, null);
   mountUI();
   scheduleAutoTranslateInit();

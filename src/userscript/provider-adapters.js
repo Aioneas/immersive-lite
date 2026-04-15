@@ -55,8 +55,14 @@
     return new Array(expected).fill("");
   }
 
-  function requestTranslations(url, headers, payload, allowResponseFormat) {
-    return postJSON(url, headers, JSON.stringify(payload));
+  async function requestTranslations(url, headers, payload, allowResponseFormat) {
+    let res = await postJSON(url, headers, JSON.stringify(payload));
+    if (!res.ok && allowResponseFormat && String(res.text || "").includes("response_format")) {
+      const p2 = { ...payload };
+      delete p2.response_format;
+      res = await postJSON(url, headers, JSON.stringify(p2));
+    }
+    return res;
   }
 
   function buildTranslationPayload(texts, settings) {
@@ -81,20 +87,11 @@
     if (s.apiKey) headers.Authorization = "Bearer " + s.apiKey;
 
     const retryOn = (st) => [408,429,500,502,503,504].includes(st);
-    const caps = getProviderCaps(s);
     const payload = buildTranslationPayload(texts, s);
     const maxAttempts = 2;
 
     for (let attempt = 0; attempt <= maxAttempts; attempt++) {
-      let res = await requestTranslations(url, headers, payload, true);
-      if (!res.ok && caps.responseFormat !== false && String(res.text || "").includes("response_format")) {
-        const p2 = { ...payload };
-        delete p2.response_format;
-        res = await postJSON(url, headers, JSON.stringify(p2));
-        await setProviderCaps({ responseFormat: false }, s);
-      } else if (res.ok && caps.responseFormat == null && payload.response_format) {
-        await setProviderCaps({ responseFormat: true }, s);
-      }
+      const res = await requestTranslations(url, headers, payload, true);
       if (res.ok) {
         const data = JSON.parse(res.text);
         return parseResult(data, texts.length);
