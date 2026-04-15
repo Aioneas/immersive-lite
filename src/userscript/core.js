@@ -55,8 +55,6 @@
     renderScheduled: false,
     adaptiveSamples: [],
     adaptiveProfile: "base",
-    progressHeartbeatTimer: 0,
-    lastProgressAt: 0,
   };
 
   function normalizeLangCode(value) {
@@ -184,21 +182,10 @@
     return t;
   }
 
-  function startProgressHeartbeat(runId, totalState) {
-    stopProgressHeartbeat();
-    state.lastProgressAt = Date.now();
-    state.progressHeartbeatTimer = setInterval(() => {
-      if (runId !== state.runId || !state.translating) return stopProgressHeartbeat();
-      if (Date.now() - state.lastProgressAt < 900) return;
-      setStatus(`等待接口响应… ${totalState.done}/${totalState.total}`);
-    }, 450);
-  }
-
-  function stopProgressHeartbeat() {
-    if (state.progressHeartbeatTimer) {
-      clearInterval(state.progressHeartbeatTimer);
-      state.progressHeartbeatTimer = 0;
-    }
+  function setStatus(msg, err) {
+    if (!state.statusEl) return;
+    state.statusEl.textContent = msg || "";
+    state.statusEl.style.color = err ? "#d32f2f" : "#6f7f97";
   }
 
   function recordAdaptiveSample(sample) {

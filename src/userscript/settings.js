@@ -200,5 +200,5 @@
       setStatus("全部缓存已清理");
     });
     $("iml-restore").addEventListener("click", () => restorePage());
-    $("iml-retranslate").addEventListener("click", async () => { await handleTranslateRequest({ forceRetranslate: true }); });
+    $("iml-retranslate").addEventListener("click", async () => { restorePage(); await translatePage(); });
   }
