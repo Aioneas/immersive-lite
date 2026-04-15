@@ -51,6 +51,8 @@
     fabDockTimer: 0,
     autoTranslateTriggered: false,
     autoTranslateInitTimer: 0,
+    renderQueue: [],
+    renderScheduled: false,
   };
 
   function normalizeLangCode(value) {

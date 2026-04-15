@@ -29,6 +29,13 @@
 
   function parseResult(data, expected) {
     let c = data?.choices?.[0]?.message?.content;
+    if (Array.isArray(c)) {
+      c = c.map((part) => {
+        if (typeof part === "string") return part;
+        if (part && typeof part.text === "string") return part.text;
+        return "";
+      }).join("");
+    }
     if (!c && typeof data?.choices?.[0]?.text === "string") c = data.choices[0].text;
     if (!c && Array.isArray(data?.translations)) return data.translations;
     if (typeof c === "string") {
@@ -48,8 +55,30 @@
     return new Array(expected).fill("");
   }
 
-  async function translateMany(texts) {
-    const s = norm(state.settings);
+  async function requestTranslations(url, headers, payload, allowResponseFormat) {
+    let res = await postJSON(url, headers, JSON.stringify(payload));
+    if (!res.ok && allowResponseFormat && String(res.text || "").includes("response_format")) {
+      const p2 = { ...payload };
+      delete p2.response_format;
+      res = await postJSON(url, headers, JSON.stringify(p2));
+    }
+    return res;
+  }
+
+  function buildTranslationPayload(texts, settings) {
+    return {
+      model: settings.model,
+      temperature: 0,
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: "You are a translation engine. Return JSON only." },
+        { role: "user", content: `Translate each item to ${settings.targetLang}. Keep order and same length. Return JSON: {\"t\":[...]}\n${JSON.stringify(texts)}` },
+      ],
+    };
+  }
+
+  async function translateManyWithAdaptiveSplit(texts, settings, depth) {
+    const s = norm(settings || state.settings);
     const url = buildApiUrl(s);
     if (!url) throw new Error("请先设置 API 地址");
     if (!s.apiKey && s.provider !== "custom") throw new Error("请先设置 API Key");
@@ -57,32 +86,31 @@
     const headers = { "Content-Type": "application/json" };
     if (s.apiKey) headers.Authorization = "Bearer " + s.apiKey;
 
-    const payload = {
-      model: s.model,
-      temperature: 0,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: "You are a translation engine. Return only JSON. Do not explain." },
-        { role: "user", content: `Translate to ${s.targetLang}. Return {\"t\":[...]} same length.\n` + JSON.stringify(texts) },
-      ],
-    };
-
     const retryOn = (st) => [408,429,500,502,503,504].includes(st);
-    for (let attempt = 0; attempt <= 2; attempt++) {
-      let res = await postJSON(url, headers, JSON.stringify(payload));
-      if (!res.ok && String(res.text || "").includes("response_format")) {
-        const p2 = { ...payload }; delete p2.response_format;
-        res = await postJSON(url, headers, JSON.stringify(p2));
-      }
+    const payload = buildTranslationPayload(texts, s);
+    const maxAttempts = 2;
+
+    for (let attempt = 0; attempt <= maxAttempts; attempt++) {
+      const res = await requestTranslations(url, headers, payload, true);
       if (res.ok) {
         const data = JSON.parse(res.text);
         return parseResult(data, texts.length);
       }
-      if (attempt < 2 && retryOn(res.status)) {
-        await sleep(180 * (attempt + 1));
+      if (attempt < maxAttempts && retryOn(res.status)) {
+        await sleep(140 * (attempt + 1));
         continue;
+      }
+      if (texts.length > 1 && (depth || 0) < 3) {
+        const mid = Math.ceil(texts.length / 2);
+        const left = await translateManyWithAdaptiveSplit(texts.slice(0, mid), s, (depth || 0) + 1);
+        const right = await translateManyWithAdaptiveSplit(texts.slice(mid), s, (depth || 0) + 1);
+        return left.concat(right);
       }
       throw new Error(`HTTP ${res.status}`);
     }
     throw new Error("max retries");
+  }
+
+  async function translateMany(texts) {
+    return await translateManyWithAdaptiveSplit(texts, state.settings, 0);
   }

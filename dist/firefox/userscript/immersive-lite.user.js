@@ -77,6 +77,8 @@
     fabDockTimer: 0,
     autoTranslateTriggered: false,
     autoTranslateInitTimer: 0,
+    renderQueue: [],
+    renderScheduled: false,
   };
 
   function normalizeLangCode(value) {
@@ -533,6 +535,13 @@
 
   function parseResult(data, expected) {
     let c = data?.choices?.[0]?.message?.content;
+    if (Array.isArray(c)) {
+      c = c.map((part) => {
+        if (typeof part === "string") return part;
+        if (part && typeof part.text === "string") return part.text;
+        return "";
+      }).join("");
+    }
     if (!c && typeof data?.choices?.[0]?.text === "string") c = data.choices[0].text;
     if (!c && Array.isArray(data?.translations)) return data.translations;
     if (typeof c === "string") {
@@ -552,8 +561,30 @@
     return new Array(expected).fill("");
   }
 
-  async function translateMany(texts) {
-    const s = norm(state.settings);
+  async function requestTranslations(url, headers, payload, allowResponseFormat) {
+    let res = await postJSON(url, headers, JSON.stringify(payload));
+    if (!res.ok && allowResponseFormat && String(res.text || "").includes("response_format")) {
+      const p2 = { ...payload };
+      delete p2.response_format;
+      res = await postJSON(url, headers, JSON.stringify(p2));
+    }
+    return res;
+  }
+
+  function buildTranslationPayload(texts, settings) {
+    return {
+      model: settings.model,
+      temperature: 0,
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: "You are a translation engine. Return JSON only." },
+        { role: "user", content: `Translate each item to ${settings.targetLang}. Keep order and same length. Return JSON: {\"t\":[...]}\n${JSON.stringify(texts)}` },
+      ],
+    };
+  }
+
+  async function translateManyWithAdaptiveSplit(texts, settings, depth) {
+    const s = norm(settings || state.settings);
     const url = buildApiUrl(s);
     if (!url) throw new Error("请先设置 API 地址");
     if (!s.apiKey && s.provider !== "custom") throw new Error("请先设置 API Key");
@@ -561,34 +592,33 @@
     const headers = { "Content-Type": "application/json" };
     if (s.apiKey) headers.Authorization = "Bearer " + s.apiKey;
 
-    const payload = {
-      model: s.model,
-      temperature: 0,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: "You are a translation engine. Return only JSON. Do not explain." },
-        { role: "user", content: `Translate to ${s.targetLang}. Return {\"t\":[...]} same length.\n` + JSON.stringify(texts) },
-      ],
-    };
-
     const retryOn = (st) => [408,429,500,502,503,504].includes(st);
-    for (let attempt = 0; attempt <= 2; attempt++) {
-      let res = await postJSON(url, headers, JSON.stringify(payload));
-      if (!res.ok && String(res.text || "").includes("response_format")) {
-        const p2 = { ...payload }; delete p2.response_format;
-        res = await postJSON(url, headers, JSON.stringify(p2));
-      }
+    const payload = buildTranslationPayload(texts, s);
+    const maxAttempts = 2;
+
+    for (let attempt = 0; attempt <= maxAttempts; attempt++) {
+      const res = await requestTranslations(url, headers, payload, true);
       if (res.ok) {
         const data = JSON.parse(res.text);
         return parseResult(data, texts.length);
       }
-      if (attempt < 2 && retryOn(res.status)) {
-        await sleep(180 * (attempt + 1));
+      if (attempt < maxAttempts && retryOn(res.status)) {
+        await sleep(140 * (attempt + 1));
         continue;
+      }
+      if (texts.length > 1 && (depth || 0) < 3) {
+        const mid = Math.ceil(texts.length / 2);
+        const left = await translateManyWithAdaptiveSplit(texts.slice(0, mid), s, (depth || 0) + 1);
+        const right = await translateManyWithAdaptiveSplit(texts.slice(mid), s, (depth || 0) + 1);
+        return left.concat(right);
       }
       throw new Error(`HTTP ${res.status}`);
     }
     throw new Error("max retries");
+  }
+
+  async function translateMany(texts) {
+    return await translateManyWithAdaptiveSplit(texts, state.settings, 0);
   }
 
 
@@ -651,10 +681,22 @@
     let isProcessing = false;
     let timer = null;
 
+    const config = {
+      batchInterval: Math.max(0, Number(opts?.batchInterval || 0)),
+      batchSize: Math.max(1, Number(opts?.batchSize || 1)),
+      batchLength: Math.max(1, Number(opts?.batchLength || 1)),
+      immediateFirstRun: opts?.immediateFirstRun === true,
+    };
+    let firstDispatchPending = config.immediateFirstRun;
+
     const schedule = () => {
-      if (!isProcessing && !timer && queue.length > 0) {
-        timer = setTimeout(processQueue, opts.batchInterval);
+      if (isProcessing || timer || queue.length === 0) return;
+      if (firstDispatchPending) {
+        firstDispatchPending = false;
+        timer = setTimeout(processQueue, 0);
+        return;
       }
+      timer = setTimeout(processQueue, config.batchInterval);
     };
 
     const processQueue = async () => {
@@ -666,7 +708,7 @@
       let endIndex = 0;
       for (const task of queue) {
         const len = task.payload.length || 0;
-        if (endIndex >= opts.batchSize || (totalLen + len > opts.batchLength && endIndex > 0)) break;
+        if (endIndex >= config.batchSize || (totalLen + len > config.batchLength && endIndex > 0)) break;
         totalLen += len;
         endIndex++;
       }
@@ -681,7 +723,7 @@
       } finally {
         isProcessing = false;
         if (queue.length > 0) {
-          if (queue.length >= opts.batchSize) setTimeout(processQueue, 0);
+          if (queue.length >= config.batchSize) setTimeout(processQueue, 0);
           else schedule();
         }
       }
@@ -691,7 +733,7 @@
       addTask(payload) {
         return new Promise((resolve, reject) => {
           queue.push({ payload, resolve, reject });
-          if (queue.length >= opts.batchSize) processQueue();
+          if (queue.length >= config.batchSize) processQueue();
           else schedule();
         });
       },
@@ -705,7 +747,7 @@
     };
   }
 
-  function applyTranslation(node, orig, tr) {
+  function renderTranslatedContent(node, orig, tr) {
     if (!state.originalHTML.has(node)) state.originalHTML.set(node, node.innerHTML);
     if (state.settings.displayMode === "translated") {
       node.innerHTML = `<span style="display:block">${esc(tr || "")}</span>`;
@@ -715,6 +757,156 @@
     node.setAttribute("data-iml-translated", "1");
   }
 
+  function flushRenderQueueChunk() {
+    state.renderScheduled = false;
+    const runId = state.runId;
+    let remaining = 8;
+    while (remaining > 0 && state.renderQueue.length > 0) {
+      const item = state.renderQueue.shift();
+      if (!item || item.runId !== runId) continue;
+      if (!item.node || !item.node.isConnected) continue;
+      renderTranslatedContent(item.node, item.orig, item.tr);
+      if (typeof item.afterRender === "function") item.afterRender();
+      remaining--;
+    }
+    if (state.renderQueue.length > 0) scheduleRenderQueue();
+  }
+
+  function scheduleRenderQueue() {
+    if (state.renderScheduled) return;
+    state.renderScheduled = true;
+    const cb = flushRenderQueueChunk;
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(cb);
+    else setTimeout(cb, 16);
+  }
+
+  function enqueueTranslationRender(item) {
+    state.renderQueue.push(item);
+    scheduleRenderQueue();
+  }
+
+  function clearRenderQueue() {
+    state.renderQueue.length = 0;
+    state.renderScheduled = false;
+  }
+
+  function splitNodesByCache(nodes) {
+    const cached = [];
+    const pending = [];
+    for (const node of nodes) {
+      const orig = (node.innerText || "").trim();
+      if (!orig || shouldSkipTranslationText(orig)) continue;
+      const tr = getCache(orig);
+      if (typeof tr === "string" && tr) cached.push({ node, orig, tr });
+      else pending.push(node);
+    }
+    return { cached, pending };
+  }
+
+  function getViewportPriority(node) {
+    const rect = node.getBoundingClientRect();
+    const vh = window.innerHeight || 800;
+    const inView = rect.bottom > 0 && rect.top < vh;
+    if (inView) return { phase: 0, distance: Math.abs(rect.top) };
+    if (rect.top >= vh) return { phase: 1, distance: rect.top - vh };
+    return { phase: 2, distance: Math.abs(rect.bottom) };
+  }
+
+  function splitTranslationPhases(nodes) {
+    const foreground = [];
+    const background = [];
+    for (const node of nodes) {
+      const p = getViewportPriority(node);
+      if (p.phase === 0) foreground.push(node);
+      else background.push(node);
+    }
+    foreground.sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+    background.sort((a, b) => {
+      const pa = getViewportPriority(a), pb = getViewportPriority(b);
+      if (pa.phase !== pb.phase) return pa.phase - pb.phase;
+      return pa.distance - pb.distance;
+    });
+    return { foreground, background };
+  }
+
+  function createPhaseQueueConfig(base, phase) {
+    const s = base || norm(state.settings);
+    if (phase === "foreground") {
+      return {
+        batchInterval: 0,
+        batchSize: Math.min(4, Math.max(1, s.batchSize)),
+        batchLength: Math.min(600, Math.max(240, s.batchLength)),
+        immediateFirstRun: true,
+      };
+    }
+    return {
+      batchInterval: s.batchInterval,
+      batchSize: s.batchSize,
+      batchLength: s.batchLength,
+      immediateFirstRun: false,
+    };
+  }
+
+  function getPhaseWorkerCount(settings, phaseName, nodeCount) {
+    const s = norm(settings || state.settings);
+    if (phaseName === "foreground") return Math.min(4, s.concurrency, nodeCount);
+    return Math.min(s.concurrency, nodeCount);
+  }
+
+  function waitForRenderQueueDrained(runId) {
+    return new Promise((resolve) => {
+      let guard = 0;
+      const check = () => {
+        if (runId !== state.runId) return resolve();
+        if (!state.renderQueue.some((item) => item && item.runId === runId)) return resolve();
+        guard++;
+        if (guard > 600) return resolve();
+        setTimeout(check, 16);
+      };
+      check();
+    });
+  }
+
+  async function runTranslationPhase(nodes, runId, totalState, phaseName) {
+    if (!nodes.length) return;
+    const s = norm(state.settings);
+    if (state.batchQueue) state.batchQueue.destroy();
+    state.batchQueue = createBatchQueue(translateMany, createPhaseQueueConfig(s, phaseName));
+
+    let cursor = 0;
+    const workerCount = getPhaseWorkerCount(s, phaseName, nodes.length);
+
+    async function worker() {
+      while (true) {
+        if (!state.translating || runId !== state.runId) return;
+        const idx = cursor++;
+        if (idx >= nodes.length) return;
+        const node = nodes[idx];
+        const orig = (node.innerText || "").trim();
+        try {
+          const tr = await translateText(orig);
+          if (!state.translating || runId !== state.runId) return;
+          enqueueTranslationRender({
+            runId,
+            node,
+            orig,
+            tr,
+            afterRender() {
+              totalState.done++;
+              setStatus(`翻译中 ${totalState.done}/${totalState.total}`);
+            },
+          });
+        } catch (e) {
+          totalState.failed++;
+          console.error("[immersive-lite] text err", phaseName, e);
+        }
+      }
+    }
+
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    await waitForRenderQueueDrained(runId);
+  }
+
   async function translatePage(options) {
     const opts = options || {};
     if (state.translating || state.translated) return;
@@ -722,59 +914,42 @@
     state.translating = true;
     state.runId += 1;
     const runId = state.runId;
+    clearRenderQueue();
     setFabState(true);
 
     try {
-      const s = norm(state.settings);
       const nodes = pickNodes();
       if (!nodes.length) { setStatus("没找到可翻译文本", true); return; }
 
-      const h = window.innerHeight || 800;
-      nodes.sort((a, b) => {
-        const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
-        const aIn = ra.bottom > 0 && ra.top < h, bIn = rb.bottom > 0 && rb.top < h;
-        if (aIn && !bIn) return -1;
-        if (!aIn && bIn) return 1;
-        return ra.top - rb.top;
-      });
+      const { foreground, background } = splitTranslationPhases(nodes);
+      const totalState = { total: nodes.length, done: 0, failed: 0 };
+      setStatus(`翻译中 0/${totalState.total}`);
 
-      if (state.batchQueue) state.batchQueue.destroy();
-      state.batchQueue = createBatchQueue(translateMany, {
-        batchInterval: s.batchInterval,
-        batchSize: s.batchSize,
-        batchLength: s.batchLength,
-      });
-
-      const total = nodes.length;
-      let done = 0, failed = 0;
-      let cursor = 0;
-      setStatus(`翻译中 0/${total}`);
-
-      async function worker() {
-        while (true) {
-          if (!state.translating || runId !== state.runId) return;
-          const idx = cursor++;
-          if (idx >= nodes.length) return;
-          const node = nodes[idx];
-          const orig = (node.innerText || "").trim();
-          try {
-            const tr = await translateText(orig);
-            if (!state.translating || runId !== state.runId) return;
-            if (node && node.isConnected) applyTranslation(node, orig, tr);
-            done++;
-            setStatus(`翻译中 ${done}/${total}`);
-          } catch (e) {
-            failed++;
-            console.error("[immersive-lite] text err", e);
-          }
-        }
+      const cachedForeground = splitNodesByCache(foreground);
+      const cachedBackground = splitNodesByCache(background);
+      const cachedEntries = cachedForeground.cached;
+      for (const item of cachedEntries) {
+        enqueueTranslationRender({
+          runId,
+          node: item.node,
+          orig: item.orig,
+          tr: item.tr,
+          afterRender() {
+            totalState.done++;
+            setStatus(`翻译中 ${totalState.done}/${totalState.total}`);
+          },
+        });
       }
+      await waitForRenderQueueDrained(runId);
+      if (!state.translating || runId !== state.runId) return;
 
-      const workerCount = Math.min(s.concurrency, nodes.length);
-      await Promise.all(Array.from({ length: workerCount }, () => worker()));
+      await runTranslationPhase(cachedForeground.pending, runId, totalState, "foreground");
+      if (!state.translating || runId !== state.runId) return;
+      await runTranslationPhase(cachedBackground.pending, runId, totalState, "background");
       if (runId !== state.runId) return;
-      state.translated = done > 0;
-      setStatus(failed > 0 ? `完成 ${done}/${total}，${failed} 段失败` : "");
+
+      state.translated = totalState.done > 0;
+      setStatus(totalState.failed > 0 ? `完成 ${totalState.done}/${totalState.total}，${totalState.failed} 段失败` : "");
     } catch (e) {
       setStatus("翻译失败: " + (e?.message || e), true);
     } finally {
@@ -790,6 +965,7 @@
     state.runId += 1;
     state.translating = false;
     state.autoTranslateTriggered = false;
+    clearRenderQueue();
     if (state.batchQueue) { state.batchQueue.destroy(); state.batchQueue = null; }
     const nodes = Array.from(document.querySelectorAll("[data-iml-translated='1']"));
     for (const n of nodes) {
