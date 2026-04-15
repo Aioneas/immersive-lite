@@ -1,5 +1,6 @@
   const KEY = "immersive_lite_v7";
   const CACHE_KEY = "immersive_lite_cache_v1";
+  const PROVIDER_CAPS_KEY = "immersive_lite_provider_caps_v1";
   const FAB_POS_KEY = "immersive_lite_fab_pos_v2";
   const MODEL_PRESETS = {
     openai: [
@@ -44,6 +45,7 @@
     inflight: new Map(),
     batchQueue: null,
     cache: {},
+    providerCaps: {},
     cacheFlushTimer: 0,
     cacheWriteSeq: 0,
     cacheWriteChain: Promise.resolve(),
@@ -55,6 +57,9 @@
     renderScheduled: false,
     adaptiveSamples: [],
     adaptiveProfile: "base",
+    statusTimer: 0,
+    pendingStatus: "",
+    pendingStatusError: false,
   };
 
   function normalizeLangCode(value) {
@@ -183,9 +188,32 @@
   }
 
   function setStatus(msg, err) {
-    if (!state.statusEl) return;
-    state.statusEl.textContent = msg || "";
-    state.statusEl.style.color = err ? "#d32f2f" : "#6f7f97";
+    state.pendingStatus = msg || "";
+    state.pendingStatusError = !!err;
+    if (state.statusTimer) return;
+    state.statusTimer = setTimeout(() => {
+      state.statusTimer = 0;
+      if (!state.statusEl) return;
+      state.statusEl.textContent = state.pendingStatus || "";
+      state.statusEl.style.color = state.pendingStatusError ? "#d32f2f" : "#6f7f97";
+    }, err ? 0 : 120);
+  }
+
+  function makeProviderCapsKey(settings) {
+    const s = norm(settings || state.settings);
+    return JSON.stringify([s.provider, s.model, buildApiUrl(s)]);
+  }
+
+  function getProviderCaps(settings) {
+    const key = makeProviderCapsKey(settings || state.settings);
+    return state.providerCaps[key] && typeof state.providerCaps[key] === "object" ? state.providerCaps[key] : {};
+  }
+
+  async function setProviderCaps(partial, settings) {
+    const key = makeProviderCapsKey(settings || state.settings);
+    const prev = getProviderCaps(settings || state.settings);
+    state.providerCaps[key] = { ...prev, ...(partial || {}), at: Date.now() };
+    await gmSet(PROVIDER_CAPS_KEY, state.providerCaps);
   }
 
   function recordAdaptiveSample(sample) {

@@ -131,6 +131,8 @@
     return { phase: 3, distance: Math.abs(rect.bottom) };
   }
 
+  const SKIP_TAGS = new Set(["SCRIPT","STYLE","NOSCRIPT","TEXTAREA","INPUT","BUTTON","SELECT","OPTION","CODE","PRE","SVG"]);
+
   function pickNodes() {
     const sel = "p,li,h1,h2,h3,h4,h5,h6,blockquote,figcaption,summary,td,th,a,span,div,article,section,dd,dt,time";
     const all = Array.from(document.querySelectorAll(sel));
@@ -139,16 +141,20 @@
       if (el.closest("#iml-ui-root") || el.closest("#iml-settings-overlay")) return false;
       if (el.getAttribute("data-iml-translated") === "1") return false;
       const tag = el.tagName;
-      if (["SCRIPT","STYLE","NOSCRIPT","TEXTAREA","INPUT","BUTTON","SELECT","OPTION","CODE","PRE","SVG"].includes(tag)) return false;
-      const cs = getComputedStyle(el);
-      if (cs.display === "none" || cs.visibility === "hidden") return false;
+      if (SKIP_TAGS.has(tag)) return false;
       const txt = (el.innerText || "").trim();
       if (!hasTranslationValue(txt)) return false;
       if (txt.length > 2000) return false;
+      try {
+        const cs = getComputedStyle(el);
+        if (cs.display === "none" || cs.visibility === "hidden") return false;
+      } catch { return false; }
       if (el.childElementCount > 0) {
         const hasBlock = Array.from(el.children).some((c) => {
-          const d = getComputedStyle(c).display;
-          return d === "block" || d === "flex" || d === "grid";
+          try {
+            const d = getComputedStyle(c).display;
+            return d === "block" || d === "flex" || d === "grid";
+          } catch { return false; }
         });
         if (hasBlock) return false;
       }

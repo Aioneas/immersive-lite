@@ -180,24 +180,27 @@
   }
 
   function splitTranslationBuckets(nodes) {
+    const items = nodes.map((node) => ({ node, priority: getNearViewportPriority(node) }));
     const foreground = [];
     const near = [];
     const far = [];
-    for (const node of nodes) {
-      const p = getNearViewportPriority(node);
-      if (p.phase === 0) foreground.push(node);
-      else if (p.phase === 1) near.push(node);
-      else far.push(node);
+    for (const item of items) {
+      if (item.priority.phase === 0) foreground.push(item);
+      else if (item.priority.phase === 1) near.push(item);
+      else far.push(item);
     }
     const sorter = (a, b) => {
-      const pa = getNearViewportPriority(a), pb = getNearViewportPriority(b);
-      if (pa.phase !== pb.phase) return pa.phase - pb.phase;
-      return pa.distance - pb.distance;
+      if (a.priority.phase !== b.priority.phase) return a.priority.phase - b.priority.phase;
+      return a.priority.distance - b.priority.distance;
     };
     foreground.sort(sorter);
     near.sort(sorter);
     far.sort(sorter);
-    return { foreground, near, far };
+    return {
+      foreground: foreground.map((x) => x.node),
+      near: near.map((x) => x.node),
+      far: far.map((x) => x.node),
+    };
   }
 
 
