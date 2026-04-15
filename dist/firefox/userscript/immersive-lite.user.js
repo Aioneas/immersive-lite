@@ -1026,9 +1026,20 @@
     await waitForRenderQueueDrained(runId);
   }
 
+  async function handleTranslateRequest(options) {
+    if (state.translating) return;
+    if (state.translated) {
+      restorePage();
+      await translatePage({ ...(options || {}), forceRetranslate: true });
+      return;
+    }
+    await translatePage(options || {});
+  }
+
   async function translatePage(options) {
     const opts = options || {};
-    if (state.translating || state.translated) return;
+    if (state.translating) return;
+    if (state.translated && !opts.forceRetranslate) return;
     if (!opts.autoTriggered) state.autoTranslateTriggered = false;
     state.translating = true;
     state.runId += 1;
@@ -1307,7 +1318,7 @@
       setStatus("全部缓存已清理");
     });
     $("iml-restore").addEventListener("click", () => restorePage());
-    $("iml-retranslate").addEventListener("click", async () => { restorePage(); await translatePage(); });
+    $("iml-retranslate").addEventListener("click", async () => { await handleTranslateRequest({ forceRetranslate: true }); });
   }
 
 
@@ -1605,7 +1616,7 @@
       revealFab();
       scheduleFabDock(1800);
       if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; openSettings(); return; }
-      clickTimer = setTimeout(async () => { clickTimer = null; await translatePage(); }, 280);
+      clickTimer = setTimeout(async () => { clickTimer = null; await handleTranslateRequest(); }, 280);
     });
 
     shadow.appendChild(fab);

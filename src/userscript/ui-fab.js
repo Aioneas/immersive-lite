@@ -292,7 +292,7 @@
       revealFab();
       scheduleFabDock(1800);
       if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; openSettings(); return; }
-      clickTimer = setTimeout(async () => { clickTimer = null; await translatePage(); }, 280);
+      clickTimer = setTimeout(async () => { clickTimer = null; await handleTranslateRequest(); }, 280);
     });
 
     shadow.appendChild(fab);

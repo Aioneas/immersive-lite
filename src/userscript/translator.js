@@ -311,9 +311,20 @@
     await waitForRenderQueueDrained(runId);
   }
 
+  async function handleTranslateRequest(options) {
+    if (state.translating) return;
+    if (state.translated) {
+      restorePage();
+      await translatePage({ ...(options || {}), forceRetranslate: true });
+      return;
+    }
+    await translatePage(options || {});
+  }
+
   async function translatePage(options) {
     const opts = options || {};
-    if (state.translating || state.translated) return;
+    if (state.translating) return;
+    if (state.translated && !opts.forceRetranslate) return;
     if (!opts.autoTriggered) state.autoTranslateTriggered = false;
     state.translating = true;
     state.runId += 1;
