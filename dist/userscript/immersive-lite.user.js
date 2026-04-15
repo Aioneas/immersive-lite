@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Immersive Lite (Core)
 // @namespace    https://github.com/Aioneas/immersive-lite
-// @version      0.9.0
+// @version      0.10.0
 // @description  Core-only bilingual page translation with custom OpenAI-compatible API (no login/cloud/pricing).
 // @author       Aioneas
 // @match        *://*/*
@@ -27,6 +27,7 @@
   const KEY = "immersive_lite_v7";
   const CACHE_KEY = "immersive_lite_cache_v1";
   const FAB_POS_KEY = "immersive_lite_fab_pos_v2";
+  const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
   const MODEL_PRESETS = {
     openai: [
       "gpt-5.4","gpt-5.3","gpt-5.2","gpt-5.1","gpt-5",
@@ -81,6 +82,9 @@
     renderScheduled: false,
     adaptiveSamples: [],
     adaptiveProfile: "base",
+    mutationObserver: null,
+    mutationTimer: 0,
+    lastUrl: location.href,
   };
 
   function normalizeLangCode(value) {
@@ -277,6 +281,14 @@
     return (h >>> 0).toString(16);
   }
 
+  // [FIX #1] Anti-collision: hash + length + first/last chars as composite key
+  function makeCacheFingerprint(text) {
+    const t = String(text || "");
+    const prefix = t.slice(0, 32);
+    const suffix = t.length > 32 ? t.slice(-16) : "";
+    return hashText(t) + ":" + t.length + ":" + hashText(prefix + "|" + suffix);
+  }
+
   function makeScopeKey(settings) {
     const s = norm(settings || state.settings);
     return JSON.stringify([s.provider, s.model, s.targetLang, buildApiUrl(s)]);
@@ -288,7 +300,7 @@
   }
 
   function makeCacheKey(text, settings) {
-    return JSON.stringify([makeScopeKey(settings), hashText(text)]);
+    return JSON.stringify([makeScopeKey(settings), makeCacheFingerprint(text)]);
   }
 
   function getCacheScopeLabel(settings) {
@@ -321,9 +333,13 @@
   function normalizeCacheStore(store) {
     const src = store && typeof store === "object" ? store : {};
     const out = {};
+    const now = Date.now();
     for (const [key, value] of Object.entries(src)) {
       const entry = normalizeCacheEntry(value);
-      if (entry) out[key] = entry;
+      if (!entry) continue;
+      // [FIX #11] TTL: skip entries older than 7 days
+      if (now - entry.at > CACHE_TTL_MS) continue;
+      out[key] = entry;
     }
     return out;
   }
@@ -365,6 +381,11 @@
     if (!hitKey) return null;
     const entry = normalizeCacheEntry(state.cache[hitKey]);
     if (!entry) return null;
+    // [FIX #11] TTL check on read
+    if (Date.now() - entry.at > CACHE_TTL_MS) {
+      delete state.cache[hitKey];
+      return null;
+    }
     const nextKey = key;
     if (hitKey !== nextKey) delete state.cache[hitKey];
     state.cache[nextKey] = { value: entry.value, at: Date.now(), scope: makeScopeKey(state.settings) };
@@ -487,10 +508,13 @@
       if (el.closest("#iml-ui-root") || el.closest("#iml-settings-overlay")) continue;
       const tag = el.tagName;
       if (["SCRIPT", "STYLE", "NOSCRIPT", "TEXTAREA", "INPUT", "BUTTON", "SELECT", "OPTION", "CODE", "PRE", "SVG"].includes(tag)) continue;
-      const cs = getComputedStyle(el);
-      if (cs.display === "none" || cs.visibility === "hidden") continue;
+      // [OPT #8] Defer getComputedStyle: only check if text looks useful first
       const text = (el.innerText || "").replace(/\s+/g, " ").trim();
       if (!text || text.length < 24) continue;
+      try {
+        const cs = getComputedStyle(el);
+        if (cs.display === "none" || cs.visibility === "hidden") continue;
+      } catch { continue; }
       pushText(text);
     }
 
@@ -556,6 +580,8 @@
     return { phase: 3, distance: Math.abs(rect.bottom) };
   }
 
+  const SKIP_TAGS = new Set(["SCRIPT","STYLE","NOSCRIPT","TEXTAREA","INPUT","BUTTON","SELECT","OPTION","CODE","PRE","SVG"]);
+
   function pickNodes() {
     const sel = "p,li,h1,h2,h3,h4,h5,h6,blockquote,figcaption,summary,td,th,a,span,div,article,section,dd,dt,time";
     const all = Array.from(document.querySelectorAll(sel));
@@ -564,16 +590,22 @@
       if (el.closest("#iml-ui-root") || el.closest("#iml-settings-overlay")) return false;
       if (el.getAttribute("data-iml-translated") === "1") return false;
       const tag = el.tagName;
-      if (["SCRIPT","STYLE","NOSCRIPT","TEXTAREA","INPUT","BUTTON","SELECT","OPTION","CODE","PRE","SVG"].includes(tag)) return false;
-      const cs = getComputedStyle(el);
-      if (cs.display === "none" || cs.visibility === "hidden") return false;
+      if (SKIP_TAGS.has(tag)) return false;
+      // [OPT #6/#12] Lightweight checks first, defer getComputedStyle
       const txt = (el.innerText || "").trim();
       if (!hasTranslationValue(txt)) return false;
       if (txt.length > 2000) return false;
+      // Now do the expensive checks
+      try {
+        const cs = getComputedStyle(el);
+        if (cs.display === "none" || cs.visibility === "hidden") return false;
+      } catch { return false; }
       if (el.childElementCount > 0) {
         const hasBlock = Array.from(el.children).some((c) => {
-          const d = getComputedStyle(c).display;
-          return d === "block" || d === "flex" || d === "grid";
+          try {
+            const d = getComputedStyle(c).display;
+            return d === "block" || d === "flex" || d === "grid";
+          } catch { return false; }
         });
         if (hasBlock) return false;
       }
@@ -611,6 +643,7 @@
     return { ok: r.ok, status: r.status, text: await r.text() };
   }
 
+  // [FIX #2] Robust parseResult: validate array length, String() coerce each element
   function parseResult(data, expected) {
     let c = data?.choices?.[0]?.message?.content;
     if (Array.isArray(c)) {
@@ -621,27 +654,42 @@
       }).join("");
     }
     if (!c && typeof data?.choices?.[0]?.text === "string") c = data.choices[0].text;
-    if (!c && Array.isArray(data?.translations)) return data.translations;
+    if (!c && Array.isArray(data?.translations)) {
+      return normalizeResultArray(data.translations, expected);
+    }
     if (typeof c === "string") {
       try {
         const j = JSON.parse(c);
         const a = j?.t || j?.translations || j?.data || j;
-        if (Array.isArray(a)) return a;
+        if (Array.isArray(a)) return normalizeResultArray(a, expected);
       } catch {}
       const m = c.match(/\[[\s\S]*\]/);
       if (m) {
         try {
           const a = JSON.parse(m[0]);
-          if (Array.isArray(a)) return a;
+          if (Array.isArray(a)) return normalizeResultArray(a, expected);
         } catch {}
       }
     }
     return new Array(expected).fill("");
   }
 
+  function normalizeResultArray(arr, expected) {
+    const result = [];
+    for (let i = 0; i < expected; i++) {
+      const v = i < arr.length ? arr[i] : "";
+      result.push(typeof v === "string" ? v : String(v ?? ""));
+    }
+    if (arr.length !== expected) {
+      console.warn("[immersive-lite] parseResult: expected", expected, "items but got", arr.length);
+    }
+    return result;
+  }
+
+  // [FIX #5] Broader response_format fallback: retry on any non-2xx (not just string match)
   async function requestTranslations(url, headers, payload, allowResponseFormat) {
     let res = await postJSON(url, headers, JSON.stringify(payload));
-    if (!res.ok && allowResponseFormat && String(res.text || "").includes("response_format")) {
+    if (!res.ok && allowResponseFormat && payload.response_format) {
       const p2 = { ...payload };
       delete p2.response_format;
       res = await postJSON(url, headers, JSON.stringify(p2));
@@ -661,6 +709,19 @@
     };
   }
 
+  // [FIX #6] Friendly HTTP error messages
+  function friendlyHttpError(status, responseText) {
+    const msg = String(responseText || "").slice(0, 200);
+    if (status === 401) return "API Key 无效或已过期 (401)";
+    if (status === 402) return "账户余额不足 (402)";
+    if (status === 403) return "无权限访问该 API (403)";
+    if (status === 404) return "API 地址或模型不存在 (404)，请检查设置";
+    if (status === 429) return "请求过于频繁，已被限速 (429)";
+    if (status >= 500) return `服务端错误 (${status})`;
+    return `HTTP ${status}` + (msg ? `: ${msg}` : "");
+  }
+
+  // [FIX #3] Backoff delay before recursive split on error
   async function translateManyWithAdaptiveSplit(texts, settings, depth) {
     const s = norm(settings || state.settings);
     const url = buildApiUrl(s);
@@ -673,11 +734,16 @@
     const retryOn = (st) => [408,429,500,502,503,504].includes(st);
     const payload = buildTranslationPayload(texts, s);
     const maxAttempts = 2;
+    let lastStatus = 0;
+    let lastText = "";
 
     for (let attempt = 0; attempt <= maxAttempts; attempt++) {
       const res = await requestTranslations(url, headers, payload, true);
+      lastStatus = res.status;
+      lastText = res.text || "";
       if (res.ok) {
-        const data = JSON.parse(res.text);
+        let data;
+        try { data = JSON.parse(res.text); } catch { throw new Error("API 返回了无效的 JSON"); }
         return parseResult(data, texts.length);
       }
       if (attempt < maxAttempts && retryOn(res.status)) {
@@ -685,14 +751,16 @@
         continue;
       }
       if (texts.length > 1 && (depth || 0) < 3) {
+        // [FIX #3] Backoff before recursive split to avoid thundering herd on 429
+        await sleep(200 * ((depth || 0) + 1));
         const mid = Math.ceil(texts.length / 2);
         const left = await translateManyWithAdaptiveSplit(texts.slice(0, mid), s, (depth || 0) + 1);
         const right = await translateManyWithAdaptiveSplit(texts.slice(mid), s, (depth || 0) + 1);
         return left.concat(right);
       }
-      throw new Error(`HTTP ${res.status}`);
+      throw new Error(friendlyHttpError(res.status, res.text));
     }
-    throw new Error("max retries");
+    throw new Error(friendlyHttpError(lastStatus, lastText));
   }
 
   async function translateMany(texts) {
@@ -725,6 +793,7 @@
     return true;
   }
 
+  // [FIX #4] Re-check cache before entering batchQueue to avoid duplicate API calls
   async function translateText(text) {
     if (shouldSkipTranslationText(text)) return text;
 
@@ -735,6 +804,10 @@
     if (state.inflight.has(key)) return await state.inflight.get(key);
 
     const p = (async () => {
+      // Re-check cache: another worker may have finished translating the same text
+      const cached2 = getCache(text);
+      if (cached2) return cached2;
+
       if (state.batchQueue) {
         const res = await state.batchQueue.addTask(text);
         await putCache(text, res || "");
@@ -825,12 +898,14 @@
     };
   }
 
+  // [FIX #10] Add lang attribute to translated spans for accessibility
   function renderTranslatedContent(node, orig, tr) {
     if (!state.originalHTML.has(node)) state.originalHTML.set(node, node.innerHTML);
+    const langAttr = state.settings.targetLang ? ` lang="${esc(state.settings.targetLang)}"` : "";
     if (state.settings.displayMode === "translated") {
-      node.innerHTML = `<span style="display:block">${esc(tr || "")}</span>`;
+      node.innerHTML = `<span style="display:block"${langAttr}>${esc(tr || "")}</span>`;
     } else {
-      node.innerHTML = `<span style="display:block">${esc(orig || "")}</span><span style="display:block;opacity:.7;color:#555;font-size:.92em">${esc(tr || "")}</span>`;
+      node.innerHTML = `<span style="display:block">${esc(orig || "")}</span><span style="display:block;opacity:.7;color:#555;font-size:.92em"${langAttr}>${esc(tr || "")}</span>`;
     }
     node.setAttribute("data-iml-translated", "1");
   }
@@ -881,25 +956,33 @@
     return { cached, pending };
   }
 
+  // [OPT #7] Pre-compute viewport priority once, then sort by stored values
   function splitTranslationBuckets(nodes) {
+    const tagged = nodes.map((node) => {
+      const p = getNearViewportPriority(node);
+      return { node, phase: p.phase, distance: p.distance };
+    });
+
     const foreground = [];
     const near = [];
     const far = [];
-    for (const node of nodes) {
-      const p = getNearViewportPriority(node);
-      if (p.phase === 0) foreground.push(node);
-      else if (p.phase === 1) near.push(node);
-      else far.push(node);
+    for (const item of tagged) {
+      if (item.phase === 0) foreground.push(item);
+      else if (item.phase === 1) near.push(item);
+      else far.push(item);
     }
     const sorter = (a, b) => {
-      const pa = getNearViewportPriority(a), pb = getNearViewportPriority(b);
-      if (pa.phase !== pb.phase) return pa.phase - pb.phase;
-      return pa.distance - pb.distance;
+      if (a.phase !== b.phase) return a.phase - b.phase;
+      return a.distance - b.distance;
     };
     foreground.sort(sorter);
     near.sort(sorter);
     far.sort(sorter);
-    return { foreground, near, far };
+    return {
+      foreground: foreground.map((x) => x.node),
+      near: near.map((x) => x.node),
+      far: far.map((x) => x.node),
+    };
   }
 
 
@@ -1071,6 +1154,115 @@
   }
 
 
+  // ─── [NEW #7] MutationObserver: auto-translate dynamically added content ───
+  function startMutationObserver() {
+    if (state.mutationObserver) return;
+    const DEBOUNCE_MS = 800;
+
+    state.mutationObserver = new MutationObserver((mutations) => {
+      if (!state.translated || state.translating) return;
+      // Only react if new text nodes / elements were actually added
+      let hasNewContent = false;
+      for (const m of mutations) {
+        if (m.type === "childList" && m.addedNodes.length > 0) {
+          for (const n of m.addedNodes) {
+            if (n.nodeType === 1 && !n.closest("#iml-ui-root") && !n.closest("#iml-settings-overlay")) {
+              hasNewContent = true;
+              break;
+            }
+          }
+        }
+        if (hasNewContent) break;
+      }
+      if (!hasNewContent) return;
+
+      if (state.mutationTimer) clearTimeout(state.mutationTimer);
+      state.mutationTimer = setTimeout(() => {
+        state.mutationTimer = 0;
+        translateNewNodes();
+      }, DEBOUNCE_MS);
+    });
+
+    state.mutationObserver.observe(document.body, {
+      childList: true,
+      subtree: true,
+    });
+  }
+
+  function stopMutationObserver() {
+    if (state.mutationObserver) {
+      state.mutationObserver.disconnect();
+      state.mutationObserver = null;
+    }
+    if (state.mutationTimer) {
+      clearTimeout(state.mutationTimer);
+      state.mutationTimer = 0;
+    }
+  }
+
+  async function translateNewNodes() {
+    if (state.translating || !state.translated) return;
+    const nodes = pickNodes();
+    if (!nodes.length) return;
+
+    state.translating = true;
+    state.runId += 1;
+    const runId = state.runId;
+    setFabState(true);
+
+    try {
+      const { foreground, near, far } = splitTranslationBuckets(nodes);
+      const allPending = foreground.concat(near, far);
+      const totalState = { total: allPending.length, done: 0, failed: 0 };
+      setStatus(`增量翻译 0/${totalState.total}`);
+
+      // Use a single background phase for incremental translation
+      await runTranslationPhase(allPending, runId, totalState, "near");
+      if (runId !== state.runId) return;
+      setStatus(totalState.failed > 0 ? `增量完成 ${totalState.done}/${totalState.total}，${totalState.failed} 段失败` : "");
+    } catch (e) {
+      console.error("[immersive-lite] incremental translate err", e);
+    } finally {
+      if (state.batchQueue) { state.batchQueue.destroy(); state.batchQueue = null; }
+      if (runId === state.runId) {
+        state.translating = false;
+        setFabState(false);
+      }
+    }
+  }
+
+  // ─── [NEW #8] SPA route change detection ───
+  function setupSpaDetection() {
+    const onRouteChange = () => {
+      const newUrl = location.href;
+      if (newUrl === state.lastUrl) return;
+      state.lastUrl = newUrl;
+      // If we had translated the previous page, reset and re-detect
+      if (state.translated || state.translating) {
+        restorePage();
+      }
+      state.autoTranslateTriggered = false;
+      // Re-schedule auto-translate detection for the new route
+      scheduleAutoTranslateInit();
+    };
+
+    // Listen for popstate (back/forward)
+    window.addEventListener("popstate", onRouteChange);
+
+    // Intercept pushState / replaceState
+    const origPush = history.pushState;
+    const origReplace = history.replaceState;
+    history.pushState = function () {
+      origPush.apply(this, arguments);
+      setTimeout(onRouteChange, 60);
+    };
+    history.replaceState = function () {
+      origReplace.apply(this, arguments);
+      setTimeout(onRouteChange, 60);
+    };
+  }
+
+
   function getProviderLabel(value) {
     if (value === "openai") return "OpenAI";
     if (value === "deepseek") return "DeepSeek";
@@ -1160,7 +1352,7 @@
           </select>
         </div>
         <div style="font-size:12px;color:#6f7f97;line-height:1.5;padding:10px 12px;background:#f4f8ff;border-radius:10px;">
-          稳定：更稳、更省；推荐：默认，适合大多数页面；极速：更快看到结果。自动翻译英文网页开启后，会在检测到英文正文时自动执行一次整页翻译；当目标语言本身也是英语时不会触发。缓存按服务 / 模型 / 目标语言 / 接口地址隔离；关闭缓存时不复用历史结果。
+          稳定：更稳、更省；推荐：默认，适合大多数页面；极速：更快看到结果。自动翻译英文网页开启后，会在检测到英文正文时自动执行一次整页翻译；当目标语言本身也是英语时不会触发。缓存按服务 / 模型 / 目标语言 / 接口地址隔离，7 天自动过期；关闭缓存时不复用历史结果。动态加载的内容会自动增量翻译。
         </div>
         <div id="iml-cache-card" style="font-size:12px;color:#5d6d86;line-height:1.6;padding:10px 12px;background:#f8fafc;border:1px solid #e4ebf5;border-radius:10px;">
           <div style="font-weight:600;color:#334b73;margin-bottom:4px;">缓存</div>
@@ -1255,25 +1447,40 @@
     root.addEventListener("click", (e) => { if (e.target === root) closePanel(); });
 
     $("iml-save").addEventListener("click", async () => {
-      const model = modelSelect.value === "custom" ? modelCustom.value.trim() : modelSelect.value;
-      if (!model) { setStatus("模型不能为空", true); return; }
-      state.settings = getDraftSettings();
-      await gmSet(KEY, state.settings);
+      const next = getDraftSettings();
+      if (!next.model) { setStatus("模型不能为空", true); return; }
+      state.settings = next;
+      await gmSet(KEY, next);
+      setStatus("已保存");
       refreshCacheInfo();
-      setStatus("设置已保存");
     });
+
+    $("iml-retranslate").addEventListener("click", async () => {
+      const next = getDraftSettings();
+      state.settings = next;
+      await gmSet(KEY, next);
+      restorePage();
+      closePanel();
+      await translatePage();
+    });
+
     $("iml-clear-scope-cache").addEventListener("click", async () => {
-      await clearCurrentScopeCache(getDraftSettings());
+      const draft = getDraftSettings();
+      await clearCurrentScopeCache(draft);
+      setStatus("已清除当前作用域缓存");
       refreshCacheInfo();
-      setStatus("当前作用域缓存已清理");
     });
+
     $("iml-clear-all-cache").addEventListener("click", async () => {
       await clearAllCache();
+      setStatus("已清除全部缓存");
       refreshCacheInfo();
-      setStatus("全部缓存已清理");
     });
-    $("iml-restore").addEventListener("click", () => restorePage());
-    $("iml-retranslate").addEventListener("click", async () => { restorePage(); await translatePage(); });
+
+    $("iml-restore").addEventListener("click", () => {
+      restorePage();
+      closePanel();
+    });
   }
 
 
@@ -1613,6 +1820,8 @@
   state.cache = normalizeCacheStore((await gmGet(CACHE_KEY, {})) || {});
   state.fabPos = await gmGet(FAB_POS_KEY, null);
   mountUI();
+  startMutationObserver();
+  setupSpaDetection();
   scheduleAutoTranslateInit();
 
   if (typeof GM_registerMenuCommand !== "undefined") {
@@ -1621,5 +1830,3 @@
     GM_registerMenuCommand("Immersive Lite: 恢复原文", restorePage);
   }
 })();
-
-
