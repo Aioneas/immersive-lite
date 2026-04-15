@@ -81,6 +81,8 @@
     renderScheduled: false,
     adaptiveSamples: [],
     adaptiveProfile: "base",
+    progressHeartbeatTimer: 0,
+    lastProgressAt: 0,
   };
 
   function normalizeLangCode(value) {
@@ -208,10 +210,21 @@
     return t;
   }
 
-  function setStatus(msg, err) {
-    if (!state.statusEl) return;
-    state.statusEl.textContent = msg || "";
-    state.statusEl.style.color = err ? "#d32f2f" : "#6f7f97";
+  function startProgressHeartbeat(runId, totalState) {
+    stopProgressHeartbeat();
+    state.lastProgressAt = Date.now();
+    state.progressHeartbeatTimer = setInterval(() => {
+      if (runId !== state.runId || !state.translating) return stopProgressHeartbeat();
+      if (Date.now() - state.lastProgressAt < 900) return;
+      setStatus(`等待接口响应… ${totalState.done}/${totalState.total}`);
+    }, 450);
+  }
+
+  function stopProgressHeartbeat() {
+    if (state.progressHeartbeatTimer) {
+      clearInterval(state.progressHeartbeatTimer);
+      state.progressHeartbeatTimer = 0;
+    }
   }
 
   function recordAdaptiveSample(sample) {
@@ -756,7 +769,7 @@
 
   function createBatchQueue(taskFn, opts) {
     const queue = [];
-    let isProcessing = false;
+    let activeCount = 0;
     let timer = null;
 
     const config = {
@@ -764,24 +777,11 @@
       batchSize: Math.max(1, Number(opts?.batchSize || 1)),
       batchLength: Math.max(1, Number(opts?.batchLength || 1)),
       immediateFirstRun: opts?.immediateFirstRun === true,
+      parallelRequests: Math.max(1, Number(opts?.parallelRequests || 1)),
     };
     let firstDispatchPending = config.immediateFirstRun;
 
-    const schedule = () => {
-      if (isProcessing || timer || queue.length === 0) return;
-      if (firstDispatchPending) {
-        firstDispatchPending = false;
-        timer = setTimeout(processQueue, 0);
-        return;
-      }
-      timer = setTimeout(processQueue, config.batchInterval);
-    };
-
-    const processQueue = async () => {
-      if (timer) { clearTimeout(timer); timer = null; }
-      if (queue.length === 0 || isProcessing) return;
-      isProcessing = true;
-
+    const pickTasks = () => {
       let totalLen = 0;
       let endIndex = 0;
       for (const task of queue) {
@@ -790,28 +790,50 @@
         totalLen += len;
         endIndex++;
       }
-      const tasks = queue.splice(0, endIndex);
-      if (!tasks.length) { isProcessing = false; return; }
+      return queue.splice(0, endIndex);
+    };
 
+    const schedule = () => {
+      if (timer || queue.length === 0 || activeCount >= config.parallelRequests) return;
+      if (firstDispatchPending) {
+        firstDispatchPending = false;
+        timer = setTimeout(drainQueue, 0);
+        return;
+      }
+      timer = setTimeout(drainQueue, config.batchInterval);
+    };
+
+    const processOneBatch = async () => {
+      if (queue.length === 0 || activeCount >= config.parallelRequests) return;
+      const tasks = pickTasks();
+      if (!tasks.length) return;
+      activeCount++;
       try {
         const res = await taskFn(tasks.map((x) => x.payload));
         tasks.forEach((task, i) => task.resolve(String(res[i] || "")));
       } catch (e) {
         tasks.forEach((task) => task.reject(e));
       } finally {
-        isProcessing = false;
-        if (queue.length > 0) {
-          if (queue.length >= config.batchSize) setTimeout(processQueue, 0);
-          else schedule();
-        }
+        activeCount--;
+        if (queue.length > 0) schedule();
+        if (queue.length > 0 && activeCount < config.parallelRequests) setTimeout(drainQueue, 0);
       }
+    };
+
+    const drainQueue = () => {
+      if (timer) { clearTimeout(timer); timer = null; }
+      if (queue.length === 0) return;
+      while (activeCount < config.parallelRequests && queue.length > 0) {
+        void processOneBatch();
+      }
+      if (queue.length > 0) schedule();
     };
 
     return {
       addTask(payload) {
         return new Promise((resolve, reject) => {
           queue.push({ payload, resolve, reject });
-          if (queue.length >= config.batchSize) processQueue();
+          if (queue.length >= config.batchSize) drainQueue();
           else schedule();
         });
       },
@@ -912,24 +934,31 @@
         batchLength: Math.min(600, Math.max(240, s.batchLength)),
         immediateFirstRun: true,
         concurrency: s.concurrency,
+        parallelRequests: 1,
       }, "foreground");
     }
     if (phase === "near") {
-      return tuneQueueConfig({
+      const cfg = tuneQueueConfig({
         batchInterval: Math.max(20, Math.min(80, s.batchInterval)),
         batchSize: Math.min(6, Math.max(2, s.batchSize)),
         batchLength: Math.min(900, Math.max(300, s.batchLength)),
         immediateFirstRun: false,
         concurrency: s.concurrency,
+        parallelRequests: Math.min(2, s.concurrency),
       }, "near");
+      if (state.adaptiveProfile === "slow") cfg.batchLength = Math.min(cfg.batchLength || 900, 720);
+      return cfg;
     }
-    return tuneQueueConfig({
+    const cfg = tuneQueueConfig({
       batchInterval: s.batchInterval,
       batchSize: s.batchSize,
       batchLength: s.batchLength,
       immediateFirstRun: false,
       concurrency: s.concurrency,
+      parallelRequests: Math.min(3, s.concurrency),
     }, "far");
+    if (state.adaptiveProfile === "slow") cfg.batchLength = Math.min(cfg.batchLength || 1200, 760);
+    return cfg;
   }
 
   function getPhaseWorkerCount(settings, phaseName, nodeCount) {
@@ -981,6 +1010,7 @@
             tr,
             afterRender() {
               totalState.done++;
+              state.lastProgressAt = Date.now();
               setStatus(`翻译中 ${totalState.done}/${totalState.total}`);
             },
           });
@@ -1012,6 +1042,8 @@
 
       const { foreground, near, far } = splitTranslationBuckets(nodes);
       const totalState = { total: nodes.length, done: 0, failed: 0 };
+      state.lastProgressAt = Date.now();
+      startProgressHeartbeat(runId, totalState);
       setStatus(`翻译中 0/${totalState.total}（${state.adaptiveProfile || getAdaptiveProfileName()}）`);
 
       const cachedForeground = splitNodesByCache(foreground);
@@ -1045,6 +1077,7 @@
     } catch (e) {
       setStatus("翻译失败: " + (e?.message || e), true);
     } finally {
+      stopProgressHeartbeat();
       if (state.batchQueue) { state.batchQueue.destroy(); state.batchQueue = null; }
       if (runId === state.runId) {
         state.translating = false;
@@ -1057,6 +1090,7 @@
     state.runId += 1;
     state.translating = false;
     state.autoTranslateTriggered = false;
+    stopProgressHeartbeat();
     clearRenderQueue();
     if (state.batchQueue) { state.batchQueue.destroy(); state.batchQueue = null; }
     const nodes = Array.from(document.querySelectorAll("[data-iml-translated='1']"));
