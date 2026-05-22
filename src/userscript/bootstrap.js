@@ -15,15 +15,27 @@
     }, 900);
   }
 
+  function registerMenuCommandCompat(label, handler) {
+    try {
+      if (typeof GM !== "undefined" && typeof GM.registerMenuCommand === "function") {
+        GM.registerMenuCommand(label, handler);
+        return;
+      }
+      if (typeof GM_registerMenuCommand !== "undefined") {
+        GM_registerMenuCommand(label, handler);
+      }
+    } catch (e) {
+      console.warn("[immersive-lite] menu command registration failed", label, e);
+    }
+  }
+
   state.settings = await loadSettingsWithMigration();
   state.cache = normalizeCacheStore((await gmGet(CACHE_KEY, {})) || {});
   state.fabPos = await gmGet(FAB_POS_KEY, null);
   mountUI();
   scheduleAutoTranslateInit();
 
-  if (typeof GM_registerMenuCommand !== "undefined") {
-    GM_registerMenuCommand("Immersive Lite: 整页翻译", translatePage);
-    GM_registerMenuCommand("Immersive Lite: 打开设置", openSettings);
-    GM_registerMenuCommand("Immersive Lite: 恢复原文", restorePage);
-  }
+  registerMenuCommandCompat("Immersive Lite: 整页翻译", translatePage);
+  registerMenuCommandCompat("Immersive Lite: 打开设置", openSettings);
+  registerMenuCommandCompat("Immersive Lite: 恢复原文", restorePage);
 })();
